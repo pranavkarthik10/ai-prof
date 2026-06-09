@@ -74,6 +74,37 @@ smooth slide-to-slide, interruptible mid-sentence.
   Lean: **Modal GPU as inference backend** (uses the Modal track) + Gradio Space as frontend. Self-hosting
   (not an external inference API) still supports the *Off the Grid* badge.
 
+## Voice (STT + TTS) — makes it feel like *class*, but it's the deepest rabbit hole
+Two more tiny, on-HF models (free under the ≤32B-*per-model* cap; FAQ uses "a 7B speech model" as its example).
+Keep both **open + self-hosted** (not ElevenLabs/Deepgram/OpenAI *API*) → protects the **Off the Grid** badge.
+
+**Pipeline:** TTS (out) speaks Nemotron's streamed explanation; STT (in) transcribes the spoken interjection
+into text for Nemotron; **VAD** is the referee that detects *when* the classmate starts talking → triggers barge-in.
+
+- **STT (interjections) — pick: Whisper, or Moonshine for speed.**
+  - `faster-whisper` / `distil-whisper` (large-v3 ~1.5B, or base/small for latency) — accurate, OpenAI open weights.
+  - **Moonshine** (~tiny) — built for real-time/on-device, faster time-to-text on short clips.
+  - Interjections are short → small model is fine; *time-to-text*, not accuracy, is the bottleneck. Start with
+    `faster-whisper-base`, switch to Moonshine only if laggy.
+- **TTS (narration) — pick: Kokoro, fallback Piper.**
+  - **Kokoro-82M** (`hexgrad/Kokoro-82M`) — 82M, good quality, fast time-to-first-audio, streamable. Sweet spot.
+  - **Piper** — even lower latency, CPU-friendly, slightly more robotic. Use if speech layer isn't on GPU.
+  - Stream sentence-by-sentence: synthesize + play each sentence as Nemotron emits it (audio ~1 sentence behind gen).
+- **Barge-in / turn-taking — use FastRTC** (`fastrtc`, the Gradio/HF WebRTC stack). Gives low-latency mic+playback
+  over WebRTC, built-in **VAD turn detection** (`ReplyOnPause`), and the hook to cancel playback + generation the
+  instant the user speaks. Avoids hand-rolling silence detection; reuses our cancellable-generation design.
+  - Loop: narrate (TTS) → Silero VAD hears speech → kill TTS + cancel Nemotron → buffer to end-of-speech → STT →
+    answer using the **cached slide reading** as context → TTS answer → resume narration.
+- **Latency budget (what "feels live" needs):** minimize time-to-first-audio. STT small (~100–300ms) + Nemotron
+  MoE fast prefill + Kokoro first chunk (~tens of ms). Run STT/TTS/VAD on the **same Modal GPU** as Nemotron
+  (or CPU for Piper+Silero) to avoid network hops.
+- **Scope ladder (don't let voice eat the week):**
+  1. **TTS narration only** — Prof talks, classmate *types* to interject. Low risk, already feels real-time.
+  2. **Push-to-talk interject** — hold key / tap to ask aloud → STT. No VAD/barge-in. ~90% of magic, ~30% of work.
+  3. **Full-duplex barge-in** via FastRTC + VAD — only once 1–2 are solid. The 2→3 jump is where time goes.
+- **Model count after voice:** MiniCPM-V (vision) + Nemotron (brain) + Whisper/Moonshine (STT) + Kokoro/Piper (TTS)
+  + Silero VAD. Multi-model is explicitly blessed; more "appropriate model fit" surface, but more integration.
+
 ## Backburner ideas (TTW — only if a 2nd submission is feasible)
 - **Emotion-driven TRPG / choose-your-own-adventure:** free text → LLM updates structured NPC emotional
   state (trust/fear/affection…) → state steers the story. Best Agent + Sharing is Caring (emotion-delta traces).
