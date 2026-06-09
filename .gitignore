@@ -23,6 +23,10 @@ data/
 !.env.example
 *.key
 
+# Agent instructions (kept local, not published)
+AGENTS.md
+CLAUDE.md
+
 # OS / editor
 .DS_Store
 .idea/
