@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.python-version
+
+# Models / weights / data (keep large + private out of git)
+*.gguf
+*.safetensors
+*.bin
+models/
+weights/
+slides/
+data/
+*.pdf
+
+# Secrets / env
+.env
+.env.*
+*.key
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.log
+
+# Gradio
+.gradio/
+flagged/
