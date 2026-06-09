@@ -16,5 +16,25 @@ misses the in-class explanation.
 
 Both models stay under the hackathon's ≤32B-per-model cap.
 
+## Run it
+```bash
+uv venv --python 3.12 && uv pip install -r requirements.txt
+.venv/bin/python app.py        # opens the Gradio UI
+```
+Out of the box it runs in **mock mode** (no weights) so you can drive the full UX —
+upload a PDF, watch it stream explanations, ask questions. To plug in the real models,
+copy `.env.example` to `.env` and point `VISION_BASE_URL` / `BRAIN_BASE_URL` at your
+OpenAI-compatible endpoints (llama.cpp `llama-server` for MiniCPM-V, vLLM/llama.cpp for Nemotron).
+
 ## Status
-Early build. See [IDEATION.md](IDEATION.md) for the design, architecture notes, and prize strategy.
+**Initial vertical slice working:** upload a lecture PDF → each page rendered as an image →
+MiniCPM-V reads the slide → Nemotron streams a TA-style explanation → text interjections
+(ask a question, grounded in the cached slide reading). Slide readings are cached so
+questions never re-run the vision pass.
+
+Layout: [`app.py`](app.py) (Gradio UI) · [`ai_prof/pdf_utils.py`](ai_prof/pdf_utils.py) (PDF→slides) ·
+[`ai_prof/vision.py`](ai_prof/vision.py) (eyes) · [`ai_prof/brain.py`](ai_prof/brain.py) (brain) ·
+[`ai_prof/config.py`](ai_prof/config.py) (endpoints / mock fallback).
+
+Next up (see [IDEATION.md](IDEATION.md)): pipeline prefetch for instant transitions, `look_closer`
+real-time vision, whiteboard (Mermaid/Excalidraw), then voice (TTS → push-to-talk → barge-in).

@@ -1,0 +1,5 @@
+gradio>=4.44
+pymupdf>=1.24
+openai>=1.40
+pillow>=10.0
+python-dotenv>=1.0
