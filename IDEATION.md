@@ -105,6 +105,48 @@ into text for Nemotron; **VAD** is the referee that detects *when* the classmate
 - **Model count after voice:** MiniCPM-V (vision) + Nemotron (brain) + Whisper/Moonshine (STT) + Kokoro/Piper (TTS)
   + Silero VAD. Multi-model is explicitly blessed; more "appropriate model fit" surface, but more integration.
 
+## Agent loop, tools & slide grounding
+The brain (Nemotron) runs as a **tool-using agent** driving the lecture — professor-esque: decides which slide
+to be on, when to draw vs. just talk, when to jump back. (Strengthens the **Best Agent** award; the tool-call
+sequence *is* the publishable agent trace → **Sharing is Caring** badge.)
+
+**Tools (mutate UI / session state):**
+- `goto_slide(i)` / `next_slide()` / `prev_slide()` — navigation; lets it jump back to a referenced slide.
+- `look_closer(question)` — on-demand **real-time** MiniCPM-V call on the *current slide image* for detail.
+- `draw(mermaid | excalidraw_json)` — render on the whiteboard surface.
+- `clear_whiteboard()`
+- `highlight_region(bbox)` — optional, later.
+- narration = the free-text part of the response → streamed to TTS.
+
+**Control flow:** orchestrator loop. Each turn the agent gets `{ current slide reading, deck outline, recent
+history, trigger }` where trigger = "continue lecture" | "user asked: <q>". It returns narration + optional
+tool calls; the orchestrator executes tools (swap displayed slide, render whiteboard) and streams narration.
+**Reserve heavy reasoning for decision points (between slides), not during narration**, or latency balloons.
+
+**Grounding — preprocess (breadth) + real-time (depth), both:**
+- **On upload (once; progressive — slide 1 first so the lecture starts fast):**
+  - render each slide → image (serves *both* display and vision),
+  - **MiniCPM-V** → cached structured slide reading (title, bullets, equations, diagram desc, key concepts),
+  - **PDF text-layer** extraction (exact text ground-truth; vision misreads text) to complement vision,
+  - build a **deck outline / index** (slide → title/concepts) — this is what lets the agent *plan* and *pick* a
+    slide; it can't navigate to a slide it has never seen.
+- **During lecture (`look_closer`):** targeted MiniCPM-V look at the actual slide *with the specific question in
+  context* — handles the long tail (specific visual questions, detail the cached summary glossed over).
+- Why both: preprocess = global map + fast/cheap narration + navigation; real-time = accuracy on specific asks.
+
+**UI: show the REAL slide, never a summary.**
+- Main surface = the actual rendered slide **image / PDF page**, synced to the agent's `current_slide`.
+- **Whiteboard = a separate adjacent canvas** (Mermaid/Excalidraw render) so drawings read as the prof's
+  annotations, not edits to the original slide. (Region-highlight overlay on the slide can come later.)
+- Plus: live caption / transcript + mic / interject control.
+
+## Fine-tuning (after core pipeline — not before)
+Chosen direction: **teaching-style SFT / guided learning** — tune the brain (Nemotron) to explain like a good
+TA: analogies, checks for understanding, concise, no preamble. Bootstrap dataset = (slide reading → ideal
+explanation) pairs generated with a strong model + a little hand-curation; **QLoRA via TRL / Unsloth on Modal**;
+publish the adapter to HF → **Well-Tuned** badge (+ feeds Bonus Quest Champion). Put a before/after note in the
+model card. Strictly a step-2 enhancement — only once the live pipeline works and there's a clear objective.
+
 ## Backburner ideas (TTW — only if a 2nd submission is feasible)
 - **Emotion-driven TRPG / choose-your-own-adventure:** free text → LLM updates structured NPC emotional
   state (trust/fear/affection…) → state steers the story. Best Agent + Sharing is Caring (emotion-delta traces).
