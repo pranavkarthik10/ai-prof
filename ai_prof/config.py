@@ -37,6 +37,14 @@ class ModelConfig:
     def is_live(self) -> bool:
         return self.base_url is not None
 
+    @property
+    def openai_base_url(self) -> str | None:
+        """Return an OpenAI-compatible base URL ending in /v1."""
+        if self.base_url is None:
+            return None
+        base = self.base_url.rstrip("/")
+        return base if base.endswith("/v1") else f"{base}/v1"
+
 
 @dataclass(frozen=True)
 class Config:

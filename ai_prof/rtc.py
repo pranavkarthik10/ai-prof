@@ -72,7 +72,10 @@ def _stt_transcribe_live(audio_pcm: np.ndarray, sample_rate: int = 16_000) -> st
         buf.seek(0)
         buf.name = "audio.wav"  # openai SDK reads .name for MIME sniffing
 
-        client = openai.OpenAI(base_url=stt_cfg.base_url, api_key=stt_cfg.api_key)
+        client = openai.OpenAI(
+            base_url=stt_cfg.openai_base_url,
+            api_key=stt_cfg.api_key,
+        )
         transcript = client.audio.transcriptions.create(
             model=stt_cfg.model,
             file=buf,
@@ -108,7 +111,10 @@ def _tts_speak_stream(text: str, sample_rate: int = 48_000) -> Generator[np.ndar
     try:
         import openai
 
-        client = openai.OpenAI(base_url=tts_cfg.base_url, api_key=tts_cfg.api_key)
+        client = openai.OpenAI(
+            base_url=tts_cfg.openai_base_url,
+            api_key=tts_cfg.api_key,
+        )
         # VoxCPM2 ignores the `voice` field — any placeholder satisfies the schema.
         # Voice Design is applied via the parenthesised prefix on `input`.
         response = client.audio.speech.create(
@@ -140,7 +146,10 @@ def tts_speak_full(text: str) -> tuple[int, np.ndarray] | None:
     try:
         import openai
 
-        client = openai.OpenAI(base_url=tts_cfg.base_url, api_key=tts_cfg.api_key)
+        client = openai.OpenAI(
+            base_url=tts_cfg.openai_base_url,
+            api_key=tts_cfg.api_key,
+        )
         response = client.audio.speech.create(
             model=tts_cfg.model,
             voice="default",

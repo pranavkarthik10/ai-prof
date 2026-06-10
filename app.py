@@ -304,7 +304,7 @@ def on_transcribe(audio):
         wf.writeframes(data.tobytes())
     buf.seek(0)
     buf.name = "audio.wav"
-    client = OpenAI(base_url=CONFIG.stt.base_url, api_key=CONFIG.stt.api_key)
+    client = OpenAI(base_url=CONFIG.stt.openai_base_url, api_key=CONFIG.stt.api_key)
     transcript = client.audio.transcriptions.create(model=CONFIG.stt.model, file=buf)
     return transcript.text
 

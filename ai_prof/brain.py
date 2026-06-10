@@ -34,7 +34,7 @@ response concise enough to sound good aloud."""
 
 @lru_cache(maxsize=1)
 def _client() -> OpenAI:
-    return OpenAI(base_url=CONFIG.brain.base_url, api_key=CONFIG.brain.api_key)
+    return OpenAI(base_url=CONFIG.brain.openai_base_url, api_key=CONFIG.brain.api_key)
 
 
 def _stream_chat(messages: list[dict]) -> Iterator[str]:

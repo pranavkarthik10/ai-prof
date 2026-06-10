@@ -29,7 +29,7 @@ _READING_PROMPT = (
 
 @lru_cache(maxsize=1)
 def _client() -> OpenAI:
-    return OpenAI(base_url=CONFIG.vision.base_url, api_key=CONFIG.vision.api_key)
+    return OpenAI(base_url=CONFIG.vision.openai_base_url, api_key=CONFIG.vision.api_key)
 
 
 def _data_uri(image_path: str) -> str:
