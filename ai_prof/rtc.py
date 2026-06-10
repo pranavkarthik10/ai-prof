@@ -127,6 +127,37 @@ def _tts_speak_stream(text: str, sample_rate: int = 48_000) -> Generator[np.ndar
         yield np.zeros(sample_rate // 2, dtype=np.float32)
 
 
+def tts_speak_full(text: str) -> tuple[int, np.ndarray] | None:
+    """Call TTS and return (sample_rate, pcm_float32) for gr.Audio, or None in mock mode.
+
+    This is used by the agent loop (on_teach_deck / on_explain) to speak each
+    slide's explanation.  No fastrtc needed — pure HTTP to the Modal endpoint.
+    Returns None when TTS_BASE_URL is unset so callers can skip gracefully.
+    """
+    tts_cfg: ModelConfig = CONFIG.tts
+    if not tts_cfg.is_live:
+        return None
+    try:
+        import openai
+
+        client = openai.OpenAI(base_url=tts_cfg.base_url, api_key=tts_cfg.api_key)
+        response = client.audio.speech.create(
+            model=tts_cfg.model,
+            voice="default",
+            input=f"{_PROF_VOICE}{text}",
+            response_format="wav",
+        )
+        buf = io.BytesIO(response.content)
+        with wave.open(buf, "rb") as wf:
+            sr = wf.getframerate()
+            raw = wf.readframes(wf.getnframes())
+        pcm = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+        return sr, pcm
+    except Exception as exc:
+        print(f"[rtc] TTS error: {exc}")
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Public: build the ReplyOnPause handler
 # ---------------------------------------------------------------------------

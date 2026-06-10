@@ -11,6 +11,7 @@ from __future__ import annotations
 import io
 import html
 import threading
+import time
 import uuid
 import wave
 
@@ -30,9 +31,13 @@ from ai_prof.vision import read_slide
 # ai_prof/rtc.py for full wiring instructions.
 # ---------------------------------------------------------------------------
 try:
-    from ai_prof.rtc import build_rtc_handler as _build_rtc_handler
+    from ai_prof.rtc import build_rtc_handler as _build_rtc_handler, tts_speak_full
     _RTC_AVAILABLE = True
 except Exception:
+    try:
+        from ai_prof.rtc import tts_speak_full  # TTS works without fastrtc
+    except Exception:
+        tts_speak_full = lambda _text: None  # type: ignore
     _RTC_AVAILABLE = False
 
 # module-level pre-read cache: {session_id: {slide_idx: reading_str}}
@@ -159,6 +164,10 @@ _STATUS_EXPLAINING = (
     '<div style="background:#f0fdf4;border-left:3px solid #22c55e;padding:6px 12px;'
     'font-size:0.85rem;color:#166534;border-radius:0 4px 4px 0">💬 Explaining…</div>'
 )
+_STATUS_SPEAKING = (
+    '<div style="background:#fdf4ff;border-left:3px solid #a855f7;padding:6px 12px;'
+    'font-size:0.85rem;color:#6b21a8;border-radius:0 4px 4px 0">🔊 Professor speaking…</div>'
+)
 _STATUS_IDLE = ""
 
 
@@ -166,12 +175,12 @@ def on_explain(state, chat):
     deck: Deck | None = state["deck"]
     if not deck:
         gr.Warning("Upload a lecture PDF first.")
-        yield chat, _STATUS_IDLE
+        yield chat, _STATUS_IDLE, None
         return
     idx = state["index"]
-    yield chat, _STATUS_READING
+    yield chat, _STATUS_READING, None
     reading = _ensure_reading(state, idx)
-    yield chat, _STATUS_EXPLAINING
+    yield chat, _STATUS_EXPLAINING, None
     chat = chat + [{"role": "assistant", "content": ""}]
     acc = ""
     for tok in explain_slide(
@@ -183,28 +192,32 @@ def on_explain(state, chat):
     ):
         acc += tok
         chat[-1]["content"] = acc
-        yield chat, _STATUS_EXPLAINING
-    yield chat, _STATUS_IDLE
+        yield chat, _STATUS_EXPLAINING, None
+    audio = tts_speak_full(acc)
+    if audio is not None:
+        yield chat, _STATUS_SPEAKING, audio
+        time.sleep(len(audio[1]) / audio[0])
+    yield chat, _STATUS_IDLE, None
 
 
 def on_teach_deck(state, chat):
-    """Stream the lecture and move the teaching surface forward after each slide."""
+    """Stream explanation for each slide, speak it aloud, then advance."""
     deck: Deck | None = state["deck"]
     if not deck:
         gr.Warning("Upload a lecture PDF first.")
         img, caption = _slide_view(state)
-        yield state, img, caption, chat, _STATUS_IDLE, _whiteboard_view(state)
+        yield state, img, caption, chat, _STATUS_IDLE, _whiteboard_view(state), None
         return
 
     start_idx = state["index"]
     for idx in range(start_idx, len(deck)):
         state["index"] = idx
         img, caption = _slide_view(state)
-        yield state, img, caption, chat, _STATUS_READING, _whiteboard_view(state)
+        yield state, img, caption, chat, _STATUS_READING, _whiteboard_view(state), None
 
         reading = _ensure_reading(state, idx)
         board = _whiteboard_view(state, reading)
-        yield state, img, caption, chat, _STATUS_EXPLAINING, board
+        yield state, img, caption, chat, _STATUS_EXPLAINING, board, None
 
         history = chat
         chat = chat + [{"role": "assistant", "content": ""}]
@@ -218,7 +231,14 @@ def on_teach_deck(state, chat):
         ):
             acc += tok
             chat[-1]["content"] = acc
-            yield state, img, caption, chat, _STATUS_EXPLAINING, board
+            yield state, img, caption, chat, _STATUS_EXPLAINING, board, None
+
+        # Speak the full explanation; hold on this slide until audio finishes.
+        audio = tts_speak_full(acc)
+        if audio is not None:
+            sr, pcm = audio
+            yield state, img, caption, chat, _STATUS_SPEAKING, board, audio
+            time.sleep(len(pcm) / sr)
 
         if idx < len(deck) - 1:
             state["index"] = idx + 1
@@ -230,9 +250,10 @@ def on_teach_deck(state, chat):
                 chat,
                 _STATUS_READING,
                 _whiteboard_view(state),
+                None,
             )
 
-    yield state, *_slide_view(state), chat, _STATUS_IDLE, _whiteboard_view(state)
+    yield state, *_slide_view(state), chat, _STATUS_IDLE, _whiteboard_view(state), None
 
 
 def on_ask(question, state, chat):
@@ -563,6 +584,12 @@ with gr.Blocks(title="AI Prof", theme=gr.themes.Soft(), css=_CSS) as demo:
         with gr.Column(scale=5, elem_classes=["panel-card", "bottom-panel"]):
             gr.Markdown("Lecture transcript", elem_classes=["panel-title"])
             status_strip = gr.HTML(value=_STATUS_IDLE)
+            prof_audio = gr.Audio(
+                autoplay=True,
+                show_label=False,
+                visible=False,  # hidden; plays automatically via autoplay
+                interactive=False,
+            )
             chat = gr.Chatbot(
                 show_label=False,
                 height=320,
@@ -643,7 +670,7 @@ with gr.Blocks(title="AI Prof", theme=gr.themes.Soft(), css=_CSS) as demo:
                     elem_classes=["upload-copy"],
                 )
 
-    lecture_outputs = [state, slide_img, caption, chat, status_strip, whiteboard]
+    lecture_outputs = [state, slide_img, caption, chat, status_strip, whiteboard, prof_audio]
     pdf.change(
         on_upload,
         [pdf, state],
@@ -654,7 +681,7 @@ with gr.Blocks(title="AI Prof", theme=gr.themes.Soft(), css=_CSS) as demo:
         lecture_outputs,
     )
 
-    explain_btn.click(on_explain, [state, chat], [chat, status_strip])
+    explain_btn.click(on_explain, [state, chat], [chat, status_strip, prof_audio])
     teach_btn.click(on_teach_deck, [state, chat], lecture_outputs)
     question.submit(on_ask, [question, state, chat], [chat, question])
     ask_btn.click(on_ask, [question, state, chat], [chat, question])
