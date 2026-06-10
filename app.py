@@ -19,7 +19,8 @@ import numpy as np
 import gradio as gr
 from openai import OpenAI
 
-from ai_prof.brain import answer_question, explain_slide
+from ai_prof.agent import AgentAction, plan_teaching_beat
+from ai_prof.brain import explain_slide
 from ai_prof.config import CONFIG
 from ai_prof.pdf_utils import Deck, render_pdf
 from ai_prof.vision import read_slide
@@ -46,7 +47,14 @@ _preread_lock = threading.Lock()
 
 
 def _new_state() -> dict:
-    return {"deck": None, "index": 0, "readings": {}, "session_id": str(uuid.uuid4())}
+    return {
+        "deck": None,
+        "index": 0,
+        "readings": {},
+        "deck_index": "",
+        "whiteboard": [],
+        "session_id": str(uuid.uuid4()),
+    }
 
 
 def _ensure_reading(state: dict, idx: int) -> str:
@@ -77,6 +85,25 @@ def _preload_background(deck: Deck, session_id: str) -> None:
             _preread[session_id][idx] = reading
 
 
+def _build_deck_index(state: dict) -> str:
+    deck: Deck | None = state["deck"]
+    if not deck:
+        return ""
+    lines = []
+    for idx, slide in enumerate(deck.slides):
+        reading = state["readings"].get(idx, "")
+        title = _reading_field(reading, "TITLE")
+        if not title:
+            title = next(
+                (line.strip() for line in slide.text.splitlines() if line.strip()),
+                f"Slide {idx + 1}",
+            )
+        concepts = _reading_field(reading, "CONCEPTS")
+        summary = concepts or " ".join(slide.text.split())[:220] or "(visual slide)"
+        lines.append(f"{idx + 1}. {title} — {summary}")
+    return "\n".join(lines)
+
+
 def _slide_view(state: dict):
     deck: Deck | None = state["deck"]
     if not deck:
@@ -103,6 +130,32 @@ def _whiteboard_view(state: dict, reading: str | None = None) -> str:
             "<span>Key ideas and worked notes will appear here.</span>"
             "</div>"
         )
+    board = state.get("whiteboard", [])
+    if board:
+        items = []
+        for item in board:
+            if item.get("type") == "latex":
+                expression = html.escape(item.get("expression", ""))
+                items.append(
+                    '<div class="whiteboard-equation">'
+                    f"<code>{expression}</code>"
+                    "</div>"
+                )
+            else:
+                title = html.escape(item.get("title", ""))
+                body = html.escape(item.get("body", ""))
+                items.append(
+                    '<div class="whiteboard-note">'
+                    f"<strong>{title}</strong><p>{body}</p>"
+                    "</div>"
+                )
+        return (
+            '<div class="whiteboard-sheet">'
+            '<div class="whiteboard-kicker">Professor notes</div>'
+            + "".join(items)
+            + "</div>"
+        )
+
     idx = state["index"]
     reading = reading or state["readings"].get(idx, "")
     title = _reading_field(reading, "TITLE") or f"Slide {idx + 1}"
@@ -118,6 +171,43 @@ def _whiteboard_view(state: dict, reading: str | None = None) -> str:
         '<span class="whiteboard-hint">The professor can draw here as the lecture develops.</span>'
         "</div>"
     )
+
+
+def _execute_actions(state: dict, actions: tuple[AgentAction, ...]) -> bool:
+    """Apply validated agent actions. Return whether navigation occurred."""
+    deck: Deck | None = state["deck"]
+    if not deck:
+        return False
+    navigated = False
+    for action in actions:
+        if action.tool == "goto_slide":
+            state["index"] = action.args["index"] - 1
+            navigated = True
+        elif action.tool == "next_slide":
+            state["index"] = min(len(deck) - 1, state["index"] + 1)
+            navigated = True
+        elif action.tool == "prev_slide":
+            state["index"] = max(0, state["index"] - 1)
+            navigated = True
+        elif action.tool == "clear_whiteboard":
+            state["whiteboard"] = []
+        elif action.tool == "write_note":
+            state["whiteboard"].append(
+                {
+                    "type": "note",
+                    "title": action.args.get("title", ""),
+                    "body": action.args.get("body", ""),
+                }
+            )
+        elif action.tool == "write_latex":
+            state["whiteboard"].append(
+                {
+                    "type": "latex",
+                    "expression": action.args.get("expression", ""),
+                }
+            )
+        state["whiteboard"] = state["whiteboard"][-4:]
+    return navigated
 
 
 # ----------------------------------------------------------------------------- handlers
@@ -142,18 +232,15 @@ def on_upload(pdf_file, state):
     with _preread_lock:
         _preread[sid] = {}
 
-    slide0 = deck.slides[0]
-    reading0 = read_slide(slide0.image_path, text_layer=slide0.text)
-    state["readings"][0] = reading0
-    with _preread_lock:
-        _preread[sid][0] = reading0
-
-    if len(deck) > 1:
-        t = threading.Thread(target=_preload_background, args=(deck, sid), daemon=True)
-        t.start()
+    for idx, slide in enumerate(deck.slides):
+        reading = read_slide(slide.image_path, text_layer=slide.text)
+        state["readings"][idx] = reading
+        with _preread_lock:
+            _preread[sid][idx] = reading
+    state["deck_index"] = _build_deck_index(state)
 
     img, caption = _slide_view(state)
-    return state, img, caption, [], _whiteboard_view(state, reading0)
+    return state, img, caption, [], _whiteboard_view(state, state["readings"][0])
 
 
 _STATUS_READING = (
@@ -201,7 +288,7 @@ def on_explain(state, chat):
 
 
 def on_teach_deck(state, chat):
-    """Stream explanation for each slide, speak it aloud, then advance."""
+    """Run professor-planned teaching beats with navigation, board tools, and TTS."""
     deck: Deck | None = state["deck"]
     if not deck:
         gr.Warning("Upload a lecture PDF first.")
@@ -209,49 +296,40 @@ def on_teach_deck(state, chat):
         yield state, img, caption, chat, _STATUS_IDLE, _whiteboard_view(state), None
         return
 
-    start_idx = state["index"]
-    for idx in range(start_idx, len(deck)):
-        state["index"] = idx
+    max_beats = max(1, len(deck) * 2)
+    for _ in range(max_beats):
+        idx = state["index"]
         img, caption = _slide_view(state)
         yield state, img, caption, chat, _STATUS_READING, _whiteboard_view(state), None
 
         reading = _ensure_reading(state, idx)
-        board = _whiteboard_view(state, reading)
+        beat = plan_teaching_beat(
+            trigger="continue",
+            deck_index=state["deck_index"],
+            current_slide=idx + 1,
+            total_slides=len(deck),
+            current_reading=reading,
+            whiteboard_state=state["whiteboard"],
+            history=chat,
+        )
+        navigated = _execute_actions(state, beat.actions)
+        img, caption = _slide_view(state)
+        board = _whiteboard_view(state)
+        chat = chat + [{"role": "assistant", "content": beat.narration}]
         yield state, img, caption, chat, _STATUS_EXPLAINING, board, None
 
-        history = chat
-        chat = chat + [{"role": "assistant", "content": ""}]
-        acc = ""
-        for tok in explain_slide(
-            reading,
-            slide_no=idx + 1,
-            total=len(deck),
-            outline=deck.outline(),
-            history=history,
-        ):
-            acc += tok
-            chat[-1]["content"] = acc
-            yield state, img, caption, chat, _STATUS_EXPLAINING, board, None
-
-        # Speak the full explanation; hold on this slide until audio finishes.
-        audio = tts_speak_full(acc)
+        audio = tts_speak_full(beat.narration)
         if audio is not None:
             sr, pcm = audio
             yield state, img, caption, chat, _STATUS_SPEAKING, board, audio
             time.sleep(len(pcm) / sr)
 
-        if idx < len(deck) - 1:
-            state["index"] = idx + 1
-            next_img, next_caption = _slide_view(state)
-            yield (
-                state,
-                next_img,
-                next_caption,
-                chat,
-                _STATUS_READING,
-                _whiteboard_view(state),
-                None,
-            )
+        if not beat.continue_lecture:
+            break
+        if not navigated:
+            if state["index"] >= len(deck) - 1:
+                break
+            state["index"] += 1
 
     yield state, *_slide_view(state), chat, _STATUS_IDLE, _whiteboard_view(state), None
 
@@ -260,20 +338,36 @@ def on_ask(question, state, chat):
     deck: Deck | None = state["deck"]
     if not deck:
         gr.Warning("Upload a lecture PDF first.")
-        yield chat, ""
+        yield state, *_slide_view(state), chat, "", _whiteboard_view(state), None, ""
         return
     question = (question or "").strip()
     if not question:
-        yield chat, ""
+        yield state, *_slide_view(state), chat, "", _whiteboard_view(state), None, ""
         return
     idx = state["index"]
     reading = _ensure_reading(state, idx)
-    chat = chat + [{"role": "user", "content": question}, {"role": "assistant", "content": ""}]
-    acc = ""
-    for tok in answer_question(question, reading=reading, slide_no=idx + 1, history=chat):
-        acc += tok
-        chat[-1]["content"] = acc
-        yield chat, ""
+    history = chat + [{"role": "user", "content": question}]
+    beat = plan_teaching_beat(
+        trigger="question",
+        deck_index=state["deck_index"],
+        current_slide=idx + 1,
+        total_slides=len(deck),
+        current_reading=reading,
+        whiteboard_state=state["whiteboard"],
+        history=history,
+        question=question,
+    )
+    _execute_actions(state, beat.actions)
+    chat = history + [{"role": "assistant", "content": beat.narration}]
+    img, caption = _slide_view(state)
+    board = _whiteboard_view(state)
+    yield state, img, caption, chat, _STATUS_EXPLAINING, board, None, ""
+    audio = tts_speak_full(beat.narration)
+    if audio is not None:
+        sr, pcm = audio
+        yield state, img, caption, chat, _STATUS_SPEAKING, board, audio, ""
+        time.sleep(len(pcm) / sr)
+    yield state, img, caption, chat, _STATUS_IDLE, board, None, ""
 
 
 def on_nav(delta, state):
@@ -443,6 +537,27 @@ _CSS = """
 }
 .whiteboard-sheet h3 { font-size: 1.8rem; margin: 24px 0 18px; }
 .whiteboard-sheet p { font-size: 1.2rem; line-height: 1.7; max-width: 90%; }
+.whiteboard-note {
+    margin-top: 22px;
+    padding: 16px 18px;
+    border-left: 4px solid #625ce7;
+    border-radius: 0 10px 10px 0;
+    background: rgb(255 255 255 / 82%);
+}
+.whiteboard-note strong { font-size: 1.08rem; }
+.whiteboard-note p { margin: 6px 0 0; font-size: 1rem; line-height: 1.55; }
+.whiteboard-equation {
+    margin-top: 22px;
+    padding: 18px;
+    border-radius: 10px;
+    background: rgb(255 255 255 / 86%);
+    text-align: center;
+}
+.whiteboard-equation code {
+    color: #24283b;
+    font-size: 1.15rem;
+    white-space: normal;
+}
 .whiteboard-kicker {
     color: #3157a4;
     font-size: .78rem;
@@ -671,6 +786,16 @@ with gr.Blocks(title="AI Prof", theme=gr.themes.Soft(), css=_CSS) as demo:
                 )
 
     lecture_outputs = [state, slide_img, caption, chat, status_strip, whiteboard, prof_audio]
+    question_outputs = [
+        state,
+        slide_img,
+        caption,
+        chat,
+        status_strip,
+        whiteboard,
+        prof_audio,
+        question,
+    ]
     pdf.change(
         on_upload,
         [pdf, state],
@@ -683,8 +808,8 @@ with gr.Blocks(title="AI Prof", theme=gr.themes.Soft(), css=_CSS) as demo:
 
     explain_btn.click(on_explain, [state, chat], [chat, status_strip, prof_audio])
     teach_btn.click(on_teach_deck, [state, chat], lecture_outputs)
-    question.submit(on_ask, [question, state, chat], [chat, question])
-    ask_btn.click(on_ask, [question, state, chat], [chat, question])
+    question.submit(on_ask, [question, state, chat], question_outputs)
+    ask_btn.click(on_ask, [question, state, chat], question_outputs)
     prev_btn.click(
         on_nav,
         [gr.State(-1), state],

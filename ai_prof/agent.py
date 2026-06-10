@@ -95,6 +95,33 @@ def _extract_json(text: str) -> dict[str, Any]:
     return value
 
 
+def _repair_json(text: str) -> str | None:
+    """Ask the brain to repair malformed planner JSON without re-planning."""
+    if not CONFIG.brain.is_live:
+        return None
+    try:
+        response = _client().chat.completions.create(
+            model=CONFIG.brain.model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Repair the supplied malformed JSON. Preserve its intended values, "
+                        "return one valid JSON object only, and add no commentary."
+                    ),
+                },
+                {"role": "user", "content": text},
+            ],
+            temperature=0,
+            max_tokens=700,
+            response_format={"type": "json_object"},
+        )
+        return response.choices[0].message.content
+    except Exception as exc:
+        print(f"[agent] JSON repair error: {exc}")
+        return None
+
+
 def _validate_actions(raw_actions: Any, total_slides: int) -> tuple[AgentAction, ...]:
     if not isinstance(raw_actions, list):
         return ()
@@ -225,9 +252,16 @@ def plan_teaching_beat(
             messages=messages,
             temperature=0.25,
             max_tokens=700,
+            response_format={"type": "json_object"},
         )
         raw = response.choices[0].message.content or ""
-        data = _extract_json(raw)
+        try:
+            data = _extract_json(raw)
+        except (json.JSONDecodeError, ValueError):
+            repaired = _repair_json(raw)
+            if not repaired:
+                raise
+            data = _extract_json(repaired)
         narration = str(data.get("narration", "")).strip()
         if not narration:
             raise ValueError("agent returned empty narration")
