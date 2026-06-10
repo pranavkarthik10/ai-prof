@@ -32,13 +32,18 @@ from ai_prof.vision import read_slide
 # ai_prof/rtc.py for full wiring instructions.
 # ---------------------------------------------------------------------------
 try:
-    from ai_prof.rtc import build_rtc_handler as _build_rtc_handler, tts_speak_full
+    from ai_prof.rtc import (
+        _has_speech,
+        build_rtc_handler as _build_rtc_handler,
+        tts_speak_full,
+    )
     _RTC_AVAILABLE = True
 except Exception:
     try:
-        from ai_prof.rtc import tts_speak_full  # TTS works without fastrtc
+        from ai_prof.rtc import _has_speech, tts_speak_full
     except Exception:
         tts_speak_full = lambda _text: None  # type: ignore
+        _has_speech = lambda _audio: True  # type: ignore
     _RTC_AVAILABLE = False
 
 # module-level pre-read cache: {session_id: {slide_idx: reading_str}}
@@ -421,6 +426,8 @@ def on_transcribe(audio):
         return "[voice input]"
     sr, data = audio
     if data is None or len(data) == 0:
+        return ""
+    if not _has_speech(data):
         return ""
     buf = io.BytesIO()
     if data.dtype != np.int16:

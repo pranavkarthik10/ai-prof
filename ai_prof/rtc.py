@@ -47,6 +47,18 @@ from ai_prof.config import CONFIG, ModelConfig
 # STT helpers
 # ---------------------------------------------------------------------------
 
+_MIN_SPEECH_RMS = 0.005
+
+
+def _has_speech(audio_pcm: np.ndarray) -> bool:
+    if audio_pcm.size == 0:
+        return False
+    pcm = audio_pcm.astype(np.float32)
+    if np.issubdtype(audio_pcm.dtype, np.integer):
+        pcm /= float(np.iinfo(audio_pcm.dtype).max)
+    return float(np.sqrt(np.mean(np.square(pcm)))) >= _MIN_SPEECH_RMS
+
+
 def _stt_transcribe_live(audio_pcm: np.ndarray, sample_rate: int = 16_000) -> str:
     """Transcribe a NumPy PCM array via OpenAI-compatible /v1/audio/transcriptions.
 
@@ -57,6 +69,8 @@ def _stt_transcribe_live(audio_pcm: np.ndarray, sample_rate: int = 16_000) -> st
     if not stt_cfg.is_live:
         # Mock: return a placeholder so the rest of the pipeline can be tested.
         return "[STT mock — set STT_BASE_URL to transcribe real audio]"
+    if not _has_speech(audio_pcm):
+        return ""
 
     try:
         import openai  # already in requirements
