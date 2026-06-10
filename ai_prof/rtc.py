@@ -88,39 +88,43 @@ def _stt_transcribe_live(audio_pcm: np.ndarray, sample_rate: int = 16_000) -> st
 # TTS helpers
 # ---------------------------------------------------------------------------
 
-def _tts_speak_stream(text: str, sample_rate: int = 24_000) -> Generator[np.ndarray, None, None]:
-    """Yield PCM chunks (float32, mono) for *text* via /v1/audio/speech.
+# VoxCPM2 Voice Design: prepend a description in parentheses to steer the
+# synthesised voice without requiring a reference audio clip.
+_PROF_VOICE = "(Warm, articulate academic professor, clear and measured pace)"
 
-    Falls back to a single silent chunk when TTS_BASE_URL is unset.
+
+def _tts_speak_stream(text: str, sample_rate: int = 48_000) -> Generator[np.ndarray, None, None]:
+    """Yield a PCM chunk (float32, mono) for *text* via /v1/audio/speech.
+
+    VoxCPM2 returns a 48 kHz WAV file; we decode it and yield one chunk.
+    Falls back to a silent chunk when TTS_BASE_URL is unset.
     """
     tts_cfg: ModelConfig = CONFIG.tts
 
     if not tts_cfg.is_live:
-        # Mock: 0.5 s of silence at the requested sample rate.
-        silence = np.zeros(sample_rate // 2, dtype=np.float32)
-        yield silence
+        yield np.zeros(sample_rate // 2, dtype=np.float32)
         return
 
     try:
         import openai
 
         client = openai.OpenAI(base_url=tts_cfg.base_url, api_key=tts_cfg.api_key)
-        with client.audio.speech.with_streaming_response.create(
+        # VoxCPM2 ignores the `voice` field — any placeholder satisfies the schema.
+        # Voice Design is applied via the parenthesised prefix on `input`.
+        response = client.audio.speech.create(
             model=tts_cfg.model,
-            voice="alloy",
-            input=text,
-            response_format="pcm",  # raw 16-bit LE, 24 kHz mono
-        ) as resp:
-            chunk_bytes = 4096 * 2  # 4096 frames × 2 bytes per int16
-            for raw in resp.iter_bytes(chunk_bytes):
-                if not raw:
-                    continue
-                pcm16 = np.frombuffer(raw, dtype=np.int16)
-                yield pcm16.astype(np.float32) / 32768.0
+            voice="default",
+            input=f"{_PROF_VOICE}{text}",
+            response_format="wav",
+        )
+        buf = io.BytesIO(response.content)
+        with wave.open(buf, "rb") as wf:
+            raw = wf.readframes(wf.getnframes())
+        pcm16 = np.frombuffer(raw, dtype=np.int16)
+        yield pcm16.astype(np.float32) / 32768.0
     except Exception as exc:  # pragma: no cover
         print(f"[rtc] TTS error: {exc}")
-        silence = np.zeros(sample_rate // 2, dtype=np.float32)
-        yield silence
+        yield np.zeros(sample_rate // 2, dtype=np.float32)
 
 
 # ---------------------------------------------------------------------------
@@ -236,7 +240,7 @@ def build_rtc_handler(
             return
 
         # 3. TTS: stream PCM back to the caller
-        tts_sr = 24_000  # OpenAI TTS PCM output is always 24 kHz
+        tts_sr = 48_000  # VoxCPM2 outputs 48 kHz WAV
         for pcm_chunk in _tts_speak_stream(answer_text, sample_rate=tts_sr):
             yield tts_sr, pcm_chunk
 

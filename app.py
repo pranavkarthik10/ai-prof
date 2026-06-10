@@ -266,7 +266,7 @@ def on_nav(delta, state):
 def on_transcribe(audio):
     if audio is None:
         return ""
-    if not CONFIG.brain.is_live:
+    if not CONFIG.stt.is_live:
         return "[voice input]"
     sr, data = audio
     if data is None or len(data) == 0:
@@ -283,11 +283,8 @@ def on_transcribe(audio):
         wf.writeframes(data.tobytes())
     buf.seek(0)
     buf.name = "audio.wav"
-    base = CONFIG.brain.base_url.rstrip("/")
-    if not base.endswith("/v1"):
-        base += "/v1"
-    client = OpenAI(base_url=base, api_key=CONFIG.brain.api_key)
-    transcript = client.audio.transcriptions.create(model="whisper-1", file=buf)
+    client = OpenAI(base_url=CONFIG.stt.base_url, api_key=CONFIG.stt.api_key)
+    transcript = client.audio.transcriptions.create(model=CONFIG.stt.model, file=buf)
     return transcript.text
 
 
@@ -301,14 +298,108 @@ _BANNER = (
 )
 
 _CSS = """
-.gradio-container { max-width: 1500px !important; }
-.app-title { margin-bottom: 4px; }
-.teaching-panel { min-height: 470px; }
-.slide-frame img { object-fit: contain !important; background: #111827; }
-.whiteboard {
-    min-height: 470px;
-    border: 1px solid #d7dce3;
+.gradio-container {
+    max-width: 1320px !important;
+    margin: 0 auto !important;
+    padding-inline: 24px !important;
+}
+.app-title {
+    max-width: 1280px;
+    margin: 0 auto 18px;
+    padding: 4px 2px 8px;
+}
+.app-title h1 {
+    margin: 0 0 4px !important;
+    color: #24283b;
+    font-size: 2.15rem !important;
+    font-weight: 800 !important;
+    letter-spacing: -.035em;
+}
+.app-title p {
+    margin: 0 !important;
+    color: #697386;
+    font-size: 1rem;
+}
+.workspace-row {
+    width: 100%;
+    max-width: 1280px;
+    margin-inline: auto;
+    align-items: stretch !important;
+}
+.panel-card {
+    min-width: 0 !important;
+    overflow: hidden;
+    gap: 0 !important;
+    border: 1px solid #e1e5eb;
     border-radius: 14px;
+    background: #fff;
+}
+.panel-title {
+    flex: 0 0 46px !important;
+    min-height: 46px !important;
+    height: 46px !important;
+    display: flex !important;
+    align-items: center !important;
+    margin: 0 !important;
+    padding: 0 14px !important;
+    background: #ecebff;
+    border-bottom: 1px solid #dedcff;
+    color: #5b55c7;
+}
+.panel-title p {
+    margin: 0 !important;
+    font-size: .86rem;
+    font-weight: 700;
+    line-height: 1.35;
+}
+.panel-body {
+    padding: 12px !important;
+}
+.teaching-panel { min-height: 655px; }
+.slide-frame {
+    flex: 0 0 550px !important;
+    height: 550px !important;
+    min-height: 550px !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+}
+.slide-frame img {
+    height: 550px !important;
+    object-fit: contain !important;
+    background: #f8f9fb;
+}
+.slide-footer {
+    padding: 0 12px 12px !important;
+}
+.slide-caption {
+    min-height: 24px;
+    margin: 0 !important;
+    color: #667085;
+}
+.slide-controls {
+    gap: 10px !important;
+}
+.slide-controls button {
+    min-height: 42px !important;
+    border-radius: 10px !important;
+    font-weight: 700 !important;
+}
+.nav-button button {
+    color: #5b55c7 !important;
+    border: 1px solid #d8d6ff !important;
+    background: #f7f6ff !important;
+}
+.explain-button button {
+    color: #fff !important;
+    border-color: #625ce7 !important;
+    background: #625ce7 !important;
+    box-shadow: 0 5px 14px rgb(98 92 231 / 20%) !important;
+}
+.whiteboard {
+    flex: 1 1 auto !important;
+    min-height: 550px;
+    border: 0;
+    border-radius: 0;
     overflow: hidden;
     background:
         linear-gradient(#e8edf3 1px, transparent 1px),
@@ -317,7 +408,7 @@ _CSS = """
     background-size: 28px 28px;
 }
 .whiteboard-empty, .whiteboard-sheet {
-    min-height: 438px;
+    min-height: 550px;
     padding: 28px 32px;
     color: #172033;
 }
@@ -340,11 +431,95 @@ _CSS = """
 }
 .whiteboard-line { width: 72px; height: 4px; margin: 30px 0 14px; background: #f4b740; }
 .whiteboard-hint { color: #7a8496; font-size: .82rem; }
-.control-card {
-    border: 1px solid #e1e5eb;
-    border-radius: 14px;
-    padding: 12px;
-    background: #fff;
+.bottom-panel {
+    min-height: 382px;
+}
+.transcript-panel {
+    flex: 1 1 auto !important;
+    height: 334px !important;
+    min-height: 334px !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+}
+.transcript-panel .placeholder {
+    height: 100% !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    padding: 24px !important;
+    color: #8a94a6 !important;
+    text-align: center !important;
+}
+.question-body, .upload-body {
+    flex: 1 1 auto !important;
+    min-height: 334px;
+    padding: 18px !important;
+}
+.question-body {
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 12px !important;
+}
+.question-row {
+    align-items: stretch !important;
+    gap: 10px !important;
+}
+.question-input textarea {
+    min-height: 58px !important;
+}
+.question-input {
+    flex: 1 1 auto !important;
+}
+.ask-button {
+    min-width: 96px !important;
+    max-width: 110px !important;
+}
+.ask-button button {
+    height: 100% !important;
+    min-height: 58px !important;
+    font-weight: 750 !important;
+}
+.mic-label {
+    margin: 2px 0 -4px !important;
+    color: #697386;
+    font-size: .82rem;
+    font-weight: 650;
+}
+.mic-control {
+    min-height: 108px !important;
+    max-height: 122px !important;
+    overflow: hidden !important;
+}
+.mic-control button[aria-label="Record"],
+.mic-control button.record {
+    min-width: 150px !important;
+    min-height: 58px !important;
+    border-radius: 999px !important;
+    color: #fff !important;
+    background: #625ce7 !important;
+    border-color: #625ce7 !important;
+    font-size: 1rem !important;
+    font-weight: 750 !important;
+}
+.teach-button {
+    margin-top: auto !important;
+}
+.upload-body {
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 12px !important;
+}
+.upload-control {
+    min-height: 210px !important;
+}
+.upload-copy {
+    margin: 0 !important;
+    color: #667085;
+    font-size: .88rem;
+}
+@media (max-width: 900px) {
+    .gradio-container { padding-inline: 12px !important; }
+    .teaching-panel, .bottom-panel { min-width: 100% !important; }
 }
 """
 
@@ -358,54 +533,78 @@ with gr.Blocks(title="AI Prof", theme=gr.themes.Soft(), css=_CSS) as demo:
     if _BANNER:
         gr.Markdown(_BANNER)
 
-    with gr.Row(equal_height=True):
-        with gr.Column(scale=1, elem_classes=["teaching-panel"]):
+    with gr.Row(equal_height=True, elem_classes=["workspace-row"]):
+        with gr.Column(scale=1, elem_classes=["panel-card", "teaching-panel"]):
+            gr.Markdown("Lecture slides", elem_classes=["panel-title"])
             slide_img = gr.Image(
-                label="Lecture slides",
-                show_label=True,
+                show_label=False,
                 height=470,
                 elem_classes=["slide-frame"],
             )
-            caption = gr.Markdown("No deck loaded.")
-            with gr.Row():
-                prev_btn = gr.Button("Previous")
-                explain_btn = gr.Button("Explain slide")
-                next_btn = gr.Button("Next")
+            with gr.Column(elem_classes=["slide-footer"]):
+                caption = gr.Markdown("No deck loaded.", elem_classes=["slide-caption"])
+                with gr.Row(elem_classes=["slide-controls"]):
+                    prev_btn = gr.Button("Previous", elem_classes=["nav-button"])
+                    explain_btn = gr.Button(
+                        "Explain slide",
+                        variant="primary",
+                        elem_classes=["explain-button"],
+                    )
+                    next_btn = gr.Button("Next", elem_classes=["nav-button"])
 
-        with gr.Column(scale=1, elem_classes=["teaching-panel"]):
-            gr.Markdown("### Whiteboard")
+        with gr.Column(scale=1, elem_classes=["panel-card", "teaching-panel"]):
+            gr.Markdown("Whiteboard", elem_classes=["panel-title"])
             whiteboard = gr.HTML(
                 value=_whiteboard_view(_new_state()),
                 elem_classes=["whiteboard"],
             )
 
-    with gr.Row(equal_height=True):
-        with gr.Column(scale=5):
+    with gr.Row(equal_height=True, elem_classes=["workspace-row"]):
+        with gr.Column(scale=5, elem_classes=["panel-card", "bottom-panel"]):
+            gr.Markdown("Lecture transcript", elem_classes=["panel-title"])
             status_strip = gr.HTML(value=_STATUS_IDLE)
             chat = gr.Chatbot(
-                label="Lecture transcript",
+                show_label=False,
                 height=320,
                 type="messages",
                 layout="panel",
-                placeholder="The lecture transcript will appear here.",
+                placeholder=(
+                    "Upload a lecture to begin. The professor's explanation "
+                    "will appear here as it is spoken."
+                ),
+                elem_classes=["transcript-panel"],
             )
 
-        with gr.Column(scale=3, elem_classes=["control-card"]):
-            gr.Markdown("### Ask a question")
-            mic = gr.Audio(
-                sources=["microphone"],
-                type="numpy",
-                streaming=False,
-                show_label=False,
-            )
-            with gr.Row(equal_height=True):
-                question = gr.Textbox(
-                    placeholder="Type a question or use push to talk...",
+        with gr.Column(scale=3, elem_classes=["panel-card", "bottom-panel"]):
+            gr.Markdown("Ask a question", elem_classes=["panel-title"])
+            with gr.Column(elem_classes=["question-body"]):
+                with gr.Row(equal_height=True, elem_classes=["question-row"]):
+                    question = gr.Textbox(
+                        placeholder="Type a question...",
+                        show_label=False,
+                        lines=1,
+                        elem_classes=["question-input"],
+                        scale=5,
+                    )
+                    ask_btn = gr.Button(
+                        "Ask",
+                        variant="primary",
+                        elem_classes=["ask-button"],
+                        scale=1,
+                    )
+                gr.Markdown("Or ask out loud", elem_classes=["mic-label"])
+                mic = gr.Audio(
+                    sources=["microphone"],
+                    type="numpy",
+                    streaming=False,
                     show_label=False,
-                    scale=5,
+                    elem_classes=["mic-control"],
                 )
-                ask_btn = gr.Button("Ask", variant="primary", scale=1)
-            teach_btn = gr.Button("Teach from current slide", variant="secondary")
+                teach_btn = gr.Button(
+                    "Teach from current slide",
+                    variant="secondary",
+                    elem_classes=["teach-button"],
+                )
             # TODO: wire fastrtc when installed — replace `mic` above with:
             #
             #   if _RTC_AVAILABLE:
@@ -428,18 +627,21 @@ with gr.Blocks(title="AI Prof", theme=gr.themes.Soft(), css=_CSS) as demo:
             #               → TTS (/v1/audio/speech, PCM chunks)
             #               → student speaker (sub-second latency)
 
-        with gr.Column(scale=2, elem_classes=["control-card"]):
-            gr.Markdown("### Lecture upload")
-            pdf = gr.File(
-                label="Drop a PDF to begin",
-                file_types=[".pdf"],
-                type="filepath",
-                height=220,
-            )
-            gr.Markdown(
-                "The professor starts at slide 1 and advances automatically. "
-                "Use the slide controls to revisit anything."
-            )
+        with gr.Column(scale=2, elem_classes=["panel-card", "bottom-panel"]):
+            gr.Markdown("Lecture upload", elem_classes=["panel-title"])
+            with gr.Column(elem_classes=["upload-body"]):
+                pdf = gr.File(
+                    label="Drop a PDF to begin",
+                    file_types=[".pdf"],
+                    type="filepath",
+                    height=210,
+                    elem_classes=["upload-control"],
+                )
+                gr.Markdown(
+                    "The professor starts at slide 1 and advances automatically. "
+                    "Use the slide controls to revisit anything.",
+                    elem_classes=["upload-copy"],
+                )
 
     lecture_outputs = [state, slide_img, caption, chat, status_strip, whiteboard]
     pdf.change(

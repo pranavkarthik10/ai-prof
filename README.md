@@ -36,5 +36,9 @@ Layout: [`app.py`](app.py) (Gradio UI) · [`ai_prof/pdf_utils.py`](ai_prof/pdf_u
 [`ai_prof/vision.py`](ai_prof/vision.py) (eyes) · [`ai_prof/brain.py`](ai_prof/brain.py) (brain) ·
 [`ai_prof/config.py`](ai_prof/config.py) (endpoints / mock fallback).
 
-Next up (see [IDEATION.md](IDEATION.md)): pipeline prefetch for instant transitions, `look_closer`
-real-time vision, whiteboard (Mermaid/Excalidraw), then voice (TTS → push-to-talk → barge-in).
+Next up (see [IDEATION.md](IDEATION.md)): complete-deck indexing, the professor tool loop,
+whiteboard actions, then voice interruption and targeted `look_closer` vision.
+
+The current target design is documented in [ARCHITECTURE.md](ARCHITECTURE.md), including complete-deck
+indexing, the professor tool loop, a preprocessed demo lecture, synchronized speech and whiteboard actions,
+and interruption/resume behavior.

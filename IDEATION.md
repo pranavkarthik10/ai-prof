@@ -57,12 +57,12 @@ teaching-session trace) · Field Notes (blog) · Best Demo. → realistically 6+
    Avoid freeform tldraw generation — that's the day-eating trap.
 4. Voice / TTS — only with slack.
 
-## Real-time architecture (the open design area — wants more thought)
+## Real-time architecture
 Goal: feel like a *live* lecture — explanation streams as if the prof is talking through each slide,
 smooth slide-to-slide, interruptible mid-sentence.
 - **Token streaming:** stream Nemotron output to the UI (Gradio generators) so it appears as it's generated.
-- **Pipeline overlap / prefetch:** the heavy step is the MiniCPM-V vision pass. While narrating slide N,
-  run vision + Nemotron prefill for slide N+1 in the background (producer/consumer queue) → instant transitions.
+- **Complete index before teaching:** process the full deck before starting the lecture. The professor needs a
+  global map to choose slides intelligently and answer interjections. Show preparation progress in Gradio.
 - **Two-stage per slide, cached:** (a) MiniCPM-V → a structured "slide reading" (text + diagram desc + equations),
   computed once and cached; (b) Nemotron → the explanation. Interjections reuse cached (a), never re-run vision.
 - **Interjection = interrupt + branch:** need a *cancellable* generation (async cancel token / threading.Event).
@@ -124,7 +124,7 @@ tool calls; the orchestrator executes tools (swap displayed slide, render whiteb
 **Reserve heavy reasoning for decision points (between slides), not during narration**, or latency balloons.
 
 **Grounding — preprocess (breadth) + real-time (depth), both:**
-- **On upload (once; progressive — slide 1 first so the lecture starts fast):**
+- **On upload (once; complete before lecture begins):**
   - render each slide → image (serves *both* display and vision),
   - **MiniCPM-V** → cached structured slide reading (title, bullets, equations, diagram desc, key concepts),
   - **PDF text-layer** extraction (exact text ground-truth; vision misreads text) to complement vision,
@@ -139,6 +139,9 @@ tool calls; the orchestrator executes tools (swap displayed slide, render whiteb
 - **Whiteboard = a separate adjacent canvas** (Mermaid/Excalidraw render) so drawings read as the prof's
   annotations, not edits to the original slide. (Region-highlight overlay on the slide can come later.)
 - Plus: live caption / transcript + mic / interject control.
+
+The detailed deployment, deck-cache, teaching-beat, interruption, speech, and whiteboard decisions are in
+[`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ## Fine-tuning (after core pipeline — not before)
 Chosen direction: **teaching-style SFT / guided learning** — tune the brain (Nemotron) to explain like a good
