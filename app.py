@@ -72,19 +72,6 @@ def _ensure_reading(state: dict, idx: int) -> str:
     return cache[idx]
 
 
-def _preload_background(deck: Deck, session_id: str) -> None:
-    for idx in range(1, len(deck)):
-        with _preread_lock:
-            if session_id not in _preread:
-                return  # session invalidated by a new upload
-        slide = deck.slides[idx]
-        reading = read_slide(slide.image_path, text_layer=slide.text)
-        with _preread_lock:
-            if session_id not in _preread:
-                return
-            _preread[session_id][idx] = reading
-
-
 def _build_deck_index(state: dict) -> str:
     deck: Deck | None = state["deck"]
     if not deck:
@@ -224,10 +211,20 @@ def on_upload(pdf_file, state):
 
     if pdf_file is None:
         img, caption = _slide_view(state)
-        return state, img, caption, [], _whiteboard_view(state)
+        yield state, img, caption, [], _whiteboard_view(state), _STATUS_IDLE
+        return
 
     deck = render_pdf(pdf_file, dpi=CONFIG.slide_dpi)
     state["deck"] = deck
+    img, caption = _slide_view(state)
+    yield (
+        state,
+        img,
+        caption,
+        [],
+        _whiteboard_view(state),
+        _status_indexing(0, len(deck)),
+    )
 
     with _preread_lock:
         _preread[sid] = {}
@@ -237,10 +234,25 @@ def on_upload(pdf_file, state):
         state["readings"][idx] = reading
         with _preread_lock:
             _preread[sid][idx] = reading
+        yield (
+            state,
+            img,
+            caption,
+            [],
+            _whiteboard_view(state, reading if idx == 0 else None),
+            _status_indexing(idx + 1, len(deck)),
+        )
     state["deck_index"] = _build_deck_index(state)
 
     img, caption = _slide_view(state)
-    return state, img, caption, [], _whiteboard_view(state, state["readings"][0])
+    yield (
+        state,
+        img,
+        caption,
+        [],
+        _whiteboard_view(state, state["readings"][0]),
+        _STATUS_IDLE,
+    )
 
 
 _STATUS_READING = (
@@ -255,7 +267,20 @@ _STATUS_SPEAKING = (
     '<div style="background:#fdf4ff;border-left:3px solid #a855f7;padding:6px 12px;'
     'font-size:0.85rem;color:#6b21a8;border-radius:0 4px 4px 0">🔊 Professor speaking…</div>'
 )
+_STATUS_THINKING = (
+    '<div style="background:#fff7ed;border-left:3px solid #f97316;padding:6px 12px;'
+    'font-size:0.85rem;color:#9a3412;border-radius:0 4px 4px 0">Thinking…</div>'
+)
 _STATUS_IDLE = ""
+
+
+def _status_indexing(done: int, total: int) -> str:
+    return (
+        '<div style="background:#f5f3ff;border-left:3px solid #625ce7;padding:6px 12px;'
+        'font-size:0.85rem;color:#4c46a8;border-radius:0 4px 4px 0">'
+        f"Indexing lecture… {done} / {total} slides"
+        "</div>"
+    )
 
 
 def on_explain(state, chat):
@@ -347,6 +372,17 @@ def on_ask(question, state, chat):
     idx = state["index"]
     reading = _ensure_reading(state, idx)
     history = chat + [{"role": "user", "content": question}]
+    img, caption = _slide_view(state)
+    yield (
+        state,
+        img,
+        caption,
+        history,
+        _STATUS_THINKING,
+        _whiteboard_view(state),
+        None,
+        "",
+    )
     beat = plan_teaching_beat(
         trigger="question",
         deck_index=state["deck_index"],
@@ -796,20 +832,34 @@ with gr.Blocks(title="AI Prof", theme=gr.themes.Soft(), css=_CSS) as demo:
         prof_audio,
         question,
     ]
-    pdf.change(
+    upload_event = pdf.change(
         on_upload,
         [pdf, state],
-        [state, slide_img, caption, chat, whiteboard],
+        [state, slide_img, caption, chat, whiteboard, status_strip],
     ).then(
         on_teach_deck,
         [state, chat],
         lecture_outputs,
     )
 
-    explain_btn.click(on_explain, [state, chat], [chat, status_strip, prof_audio])
-    teach_btn.click(on_teach_deck, [state, chat], lecture_outputs)
-    question.submit(on_ask, [question, state, chat], question_outputs)
-    ask_btn.click(on_ask, [question, state, chat], question_outputs)
+    explain_event = explain_btn.click(
+        on_explain,
+        [state, chat],
+        [chat, status_strip, prof_audio],
+    )
+    teach_event = teach_btn.click(on_teach_deck, [state, chat], lecture_outputs)
+    question.submit(
+        on_ask,
+        [question, state, chat],
+        question_outputs,
+        cancels=[upload_event, explain_event, teach_event],
+    )
+    ask_btn.click(
+        on_ask,
+        [question, state, chat],
+        question_outputs,
+        cancels=[upload_event, explain_event, teach_event],
+    )
     prev_btn.click(
         on_nav,
         [gr.State(-1), state],
