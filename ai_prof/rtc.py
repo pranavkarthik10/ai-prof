@@ -24,6 +24,8 @@ called, so app.py can do a safe conditional import.
 from __future__ import annotations
 
 import io
+import base64
+import threading
 import wave
 from typing import Callable, Generator
 
@@ -108,6 +110,65 @@ def _stt_transcribe_live(audio_pcm: np.ndarray, sample_rate: int = 16_000) -> st
 # VoxCPM2 Voice Design: prepend a description in parentheses to steer the
 # synthesised voice without requiring a reference audio clip.
 _PROF_VOICE = "(Warm, articulate academic professor, clear and measured pace)"
+_voice_anchors: dict[str, str] = {}
+_voice_anchor_lock = threading.Lock()
+
+
+def reset_tts_voice(voice_key: str | None) -> None:
+    """Forget the generated reference voice for one lecture session."""
+    if not voice_key:
+        return
+    with _voice_anchor_lock:
+        _voice_anchors.pop(voice_key, None)
+
+
+def _speech_request(text: str, voice_key: str | None = None):
+    tts_cfg: ModelConfig = CONFIG.tts
+    client = __import__("openai").OpenAI(
+        base_url=tts_cfg.openai_base_url,
+        api_key=tts_cfg.api_key,
+    )
+    extra_body = {}
+    if voice_key:
+        with _voice_anchor_lock:
+            ref_audio = _voice_anchors.get(voice_key)
+        if ref_audio:
+            extra_body["ref_audio"] = ref_audio
+    request = {
+        "model": tts_cfg.model,
+        "voice": CONFIG.tts_voice,
+        "input": f"{_PROF_VOICE}{text}" if not extra_body else text,
+        "response_format": "wav",
+    }
+    if extra_body:
+        request["extra_body"] = extra_body
+    return client.audio.speech.create(
+        **request,
+    )
+
+
+def _remember_voice(voice_key: str | None, wav_bytes: bytes) -> None:
+    """Use the first utterance as VoxCPM reference audio for later beats."""
+    if not voice_key:
+        return
+    try:
+        source = io.BytesIO(wav_bytes)
+        clipped = io.BytesIO()
+        with wave.open(source, "rb") as reader:
+            params = reader.getparams()
+            frames = reader.readframes(min(reader.getnframes(), reader.getframerate() * 8))
+        with wave.open(clipped, "wb") as writer:
+            writer.setparams(params)
+            writer.writeframes(frames)
+        wav_bytes = clipped.getvalue()
+    except wave.Error:
+        pass
+    with _voice_anchor_lock:
+        if voice_key in _voice_anchors:
+            return
+        _voice_anchors[voice_key] = (
+            "data:audio/wav;base64," + base64.b64encode(wav_bytes).decode("ascii")
+        )
 
 
 def _tts_speak_stream(text: str, sample_rate: int = 48_000) -> Generator[np.ndarray, None, None]:
@@ -123,20 +184,7 @@ def _tts_speak_stream(text: str, sample_rate: int = 48_000) -> Generator[np.ndar
         return
 
     try:
-        import openai
-
-        client = openai.OpenAI(
-            base_url=tts_cfg.openai_base_url,
-            api_key=tts_cfg.api_key,
-        )
-        # VoxCPM2 ignores the `voice` field — any placeholder satisfies the schema.
-        # Voice Design is applied via the parenthesised prefix on `input`.
-        response = client.audio.speech.create(
-            model=tts_cfg.model,
-            voice="default",
-            input=f"{_PROF_VOICE}{text}",
-            response_format="wav",
-        )
+        response = _speech_request(text)
         buf = io.BytesIO(response.content)
         with wave.open(buf, "rb") as wf:
             raw = wf.readframes(wf.getnframes())
@@ -147,7 +195,11 @@ def _tts_speak_stream(text: str, sample_rate: int = 48_000) -> Generator[np.ndar
         yield np.zeros(sample_rate // 2, dtype=np.float32)
 
 
-def tts_speak_full(text: str) -> tuple[int, np.ndarray] | None:
+def tts_speak_full(
+    text: str,
+    *,
+    voice_key: str | None = None,
+) -> tuple[int, np.ndarray] | None:
     """Call TTS and return (sample_rate, pcm_float32) for gr.Audio, or None in mock mode.
 
     This is used by the agent loop (on_teach_deck / on_explain) to speak each
@@ -158,19 +210,10 @@ def tts_speak_full(text: str) -> tuple[int, np.ndarray] | None:
     if not tts_cfg.is_live:
         return None
     try:
-        import openai
-
-        client = openai.OpenAI(
-            base_url=tts_cfg.openai_base_url,
-            api_key=tts_cfg.api_key,
-        )
-        response = client.audio.speech.create(
-            model=tts_cfg.model,
-            voice="default",
-            input=f"{_PROF_VOICE}{text}",
-            response_format="wav",
-        )
-        buf = io.BytesIO(response.content)
+        response = _speech_request(text, voice_key)
+        wav_bytes = response.content
+        _remember_voice(voice_key, wav_bytes)
+        buf = io.BytesIO(wav_bytes)
         with wave.open(buf, "rb") as wf:
             sr = wf.getframerate()
             raw = wf.readframes(wf.getnframes())

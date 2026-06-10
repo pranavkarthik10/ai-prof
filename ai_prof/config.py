@@ -53,6 +53,7 @@ class Config:
     tts: ModelConfig
     stt: ModelConfig
     slide_dpi: int
+    tts_voice: str
 
     @property
     def fully_mocked(self) -> bool:
@@ -82,6 +83,7 @@ def load_config() -> Config:
             model=_clean(os.getenv("STT_MODEL")) or "whisper-1",
         ),
         slide_dpi=int(_clean(os.getenv("SLIDE_DPI")) or "150"),
+        tts_voice=_clean(os.getenv("TTS_VOICE")) or "default",
     )
 
 

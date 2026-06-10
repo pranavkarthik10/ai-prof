@@ -73,6 +73,38 @@ class OrchestratorTests(unittest.TestCase):
             ["First beat.", "Second beat."],
         )
 
+    @patch.object(app, "tts_speak_full", return_value=None)
+    @patch.object(app, "plan_teaching_beat")
+    def test_lecture_ignores_agent_navigation_and_stays_sequential(self, plan, _tts):
+        plan.side_effect = [
+            TeachingBeat(
+                "First beat.",
+                actions=(AgentAction("goto_slide", {"index": 3}),),
+                continue_lecture=True,
+            ),
+            TeachingBeat("Second beat.", continue_lecture=False),
+        ]
+
+        outputs = list(app.on_teach_deck(_state(), []))
+        final = outputs[-1]
+
+        self.assertEqual(final[0]["index"], 1)
+        self.assertEqual(final[2], "Slide 2 / 3")
+
+    def test_index_select_moves_to_requested_slide(self):
+        state, _img, caption, _board = app.on_index_select(2, _state())
+
+        self.assertEqual(state["index"], 2)
+        self.assertEqual(caption, "Slide 3 / 3")
+
+    def test_whiteboard_emits_math_block_for_latex(self):
+        state = _state()
+        state["whiteboard"] = [{"type": "latex", "expression": r"x^2 + y^2"}]
+
+        board = app._whiteboard_view(state)
+
+        self.assertIn("$$\nx^2 + y^2\n$$", board)
+
 
 if __name__ == "__main__":
     unittest.main()

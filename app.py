@@ -35,14 +35,16 @@ try:
     from ai_prof.rtc import (
         _has_speech,
         build_rtc_handler as _build_rtc_handler,
+        reset_tts_voice,
         tts_speak_full,
     )
     _RTC_AVAILABLE = True
 except Exception:
     try:
-        from ai_prof.rtc import _has_speech, tts_speak_full
+        from ai_prof.rtc import _has_speech, reset_tts_voice, tts_speak_full
     except Exception:
-        tts_speak_full = lambda _text: None  # type: ignore
+        tts_speak_full = lambda _text, **_kwargs: None  # type: ignore
+        reset_tts_voice = lambda _key: None  # type: ignore
         _has_speech = lambda _audio: True  # type: ignore
     _RTC_AVAILABLE = False
 
@@ -105,6 +107,23 @@ def _slide_view(state: dict):
     return slide.image_path, f"Slide {idx + 1} / {len(deck)}"
 
 
+def _index_choices(state: dict) -> list[tuple[str, int]]:
+    deck: Deck | None = state["deck"]
+    if not deck:
+        return []
+    choices = []
+    for idx, slide in enumerate(deck.slides):
+        reading = state["readings"].get(idx, "")
+        title = _reading_field(reading, "TITLE")
+        if not title:
+            title = next(
+                (line.strip() for line in slide.text.splitlines() if line.strip()),
+                f"Slide {idx + 1}",
+            )
+        choices.append((f"{idx + 1}. {title[:90]}", idx))
+    return choices
+
+
 def _reading_field(reading: str, name: str) -> str:
     prefix = f"{name}:"
     for line in reading.splitlines():
@@ -127,10 +146,10 @@ def _whiteboard_view(state: dict, reading: str | None = None) -> str:
         items = []
         for item in board:
             if item.get("type") == "latex":
-                expression = html.escape(item.get("expression", ""))
+                expression = item.get("expression", "").replace("$$", "")
                 items.append(
                     '<div class="whiteboard-equation">'
-                    f"<code>{expression}</code>"
+                    f"\n\n$$\n{expression}\n$$\n\n"
                     "</div>"
                 )
             else:
@@ -165,13 +184,20 @@ def _whiteboard_view(state: dict, reading: str | None = None) -> str:
     )
 
 
-def _execute_actions(state: dict, actions: tuple[AgentAction, ...]) -> bool:
+def _execute_actions(
+    state: dict,
+    actions: tuple[AgentAction, ...],
+    *,
+    allow_navigation: bool = True,
+) -> bool:
     """Apply validated agent actions. Return whether navigation occurred."""
     deck: Deck | None = state["deck"]
     if not deck:
         return False
     navigated = False
     for action in actions:
+        if action.tool in {"goto_slide", "next_slide", "prev_slide"} and not allow_navigation:
+            continue
         if action.tool == "goto_slide":
             state["index"] = action.args["index"] - 1
             navigated = True
@@ -211,12 +237,13 @@ def on_upload(pdf_file, state):
     sid = state["session_id"]
 
     if old_sid:
+        reset_tts_voice(old_sid)
         with _preread_lock:
             _preread.pop(old_sid, None)
 
     if pdf_file is None:
         img, caption = _slide_view(state)
-        yield state, img, caption, [], _whiteboard_view(state), _STATUS_IDLE
+        yield state, img, caption, [], _whiteboard_view(state), _STATUS_IDLE, gr.update(choices=[], value=None)
         return
 
     deck = render_pdf(pdf_file, dpi=CONFIG.slide_dpi)
@@ -229,6 +256,7 @@ def on_upload(pdf_file, state):
         [],
         _whiteboard_view(state),
         _status_indexing(0, len(deck)),
+        gr.update(choices=_index_choices(state), value=0),
     )
 
     with _preread_lock:
@@ -246,6 +274,7 @@ def on_upload(pdf_file, state):
             [],
             _whiteboard_view(state, reading if idx == 0 else None),
             _status_indexing(idx + 1, len(deck)),
+            gr.update(choices=_index_choices(state), value=0),
         )
     state["deck_index"] = _build_deck_index(state)
 
@@ -257,6 +286,7 @@ def on_upload(pdf_file, state):
         [],
         _whiteboard_view(state, state["readings"][0]),
         _STATUS_IDLE,
+        gr.update(choices=_index_choices(state), value=0),
     )
 
 
@@ -310,11 +340,11 @@ def on_explain(state, chat):
         acc += tok
         chat[-1]["content"] = acc
         yield chat, _STATUS_EXPLAINING, None
-    audio = tts_speak_full(acc)
+    audio = tts_speak_full(acc, voice_key=state["session_id"])
     if audio is not None:
-        yield chat, _STATUS_SPEAKING, audio
+        yield chat, _STATUS_SPEAKING, gr.update(value=audio, visible=True)
         time.sleep(len(audio[1]) / audio[0])
-    yield chat, _STATUS_IDLE, None
+    yield chat, _STATUS_IDLE, gr.update(value=None, visible=False)
 
 
 def on_teach_deck(state, chat):
@@ -342,26 +372,25 @@ def on_teach_deck(state, chat):
             whiteboard_state=state["whiteboard"],
             history=chat,
         )
-        navigated = _execute_actions(state, beat.actions)
+        _execute_actions(state, beat.actions, allow_navigation=False)
         img, caption = _slide_view(state)
         board = _whiteboard_view(state)
         chat = chat + [{"role": "assistant", "content": beat.narration}]
         yield state, img, caption, chat, _STATUS_EXPLAINING, board, None
 
-        audio = tts_speak_full(beat.narration)
+        audio = tts_speak_full(beat.narration, voice_key=state["session_id"])
         if audio is not None:
             sr, pcm = audio
-            yield state, img, caption, chat, _STATUS_SPEAKING, board, audio
+            yield state, img, caption, chat, _STATUS_SPEAKING, board, gr.update(value=audio, visible=True)
             time.sleep(len(pcm) / sr)
 
         if not beat.continue_lecture:
             break
-        if not navigated:
-            if state["index"] >= len(deck) - 1:
-                break
-            state["index"] += 1
+        if state["index"] >= len(deck) - 1:
+            break
+        state["index"] += 1
 
-    yield state, *_slide_view(state), chat, _STATUS_IDLE, _whiteboard_view(state), None
+    yield state, *_slide_view(state), chat, _STATUS_IDLE, _whiteboard_view(state), gr.update(value=None, visible=False)
 
 
 def on_ask(question, state, chat):
@@ -403,18 +432,26 @@ def on_ask(question, state, chat):
     img, caption = _slide_view(state)
     board = _whiteboard_view(state)
     yield state, img, caption, chat, _STATUS_EXPLAINING, board, None, ""
-    audio = tts_speak_full(beat.narration)
+    audio = tts_speak_full(beat.narration, voice_key=state["session_id"])
     if audio is not None:
         sr, pcm = audio
-        yield state, img, caption, chat, _STATUS_SPEAKING, board, audio, ""
+        yield state, img, caption, chat, _STATUS_SPEAKING, board, gr.update(value=audio, visible=True), ""
         time.sleep(len(pcm) / sr)
-    yield state, img, caption, chat, _STATUS_IDLE, board, None, ""
+    yield state, img, caption, chat, _STATUS_IDLE, board, gr.update(value=None, visible=False), ""
 
 
 def on_nav(delta, state):
     deck: Deck | None = state["deck"]
     if deck:
         state["index"] = max(0, min(len(deck) - 1, state["index"] + delta))
+    img, caption = _slide_view(state)
+    return state, img, caption, _whiteboard_view(state), state["index"] if deck else None
+
+
+def on_index_select(index, state):
+    deck: Deck | None = state["deck"]
+    if deck and index is not None:
+        state["index"] = max(0, min(len(deck) - 1, int(index)))
     img, caption = _slide_view(state)
     return state, img, caption, _whiteboard_view(state)
 
@@ -533,6 +570,9 @@ _CSS = """
     min-height: 24px;
     margin: 0 !important;
     color: #667085;
+}
+.slide-index {
+    margin: 2px 0 8px !important;
 }
 .slide-controls {
     gap: 10px !important;
@@ -722,6 +762,13 @@ with gr.Blocks(title="AI Prof", theme=gr.themes.Soft(), css=_CSS) as demo:
             )
             with gr.Column(elem_classes=["slide-footer"]):
                 caption = gr.Markdown("No deck loaded.", elem_classes=["slide-caption"])
+                slide_index = gr.Dropdown(
+                    label="Lecture index",
+                    choices=[],
+                    value=None,
+                    interactive=True,
+                    elem_classes=["slide-index"],
+                )
                 with gr.Row(elem_classes=["slide-controls"]):
                     prev_btn = gr.Button("Previous", elem_classes=["nav-button"])
                     explain_btn = gr.Button(
@@ -733,7 +780,7 @@ with gr.Blocks(title="AI Prof", theme=gr.themes.Soft(), css=_CSS) as demo:
 
         with gr.Column(scale=1, elem_classes=["panel-card", "teaching-panel"]):
             gr.Markdown("Whiteboard", elem_classes=["panel-title"])
-            whiteboard = gr.HTML(
+            whiteboard = gr.Markdown(
                 value=_whiteboard_view(_new_state()),
                 elem_classes=["whiteboard"],
             )
@@ -842,7 +889,7 @@ with gr.Blocks(title="AI Prof", theme=gr.themes.Soft(), css=_CSS) as demo:
     upload_event = pdf.change(
         on_upload,
         [pdf, state],
-        [state, slide_img, caption, chat, whiteboard, status_strip],
+        [state, slide_img, caption, chat, whiteboard, status_strip, slide_index],
     ).then(
         on_teach_deck,
         [state, chat],
@@ -870,11 +917,16 @@ with gr.Blocks(title="AI Prof", theme=gr.themes.Soft(), css=_CSS) as demo:
     prev_btn.click(
         on_nav,
         [gr.State(-1), state],
-        [state, slide_img, caption, whiteboard],
+        [state, slide_img, caption, whiteboard, slide_index],
     )
     next_btn.click(
         on_nav,
         [gr.State(1), state],
+        [state, slide_img, caption, whiteboard, slide_index],
+    )
+    slide_index.change(
+        on_index_select,
+        [slide_index, state],
         [state, slide_img, caption, whiteboard],
     )
     mic.stop_recording(on_transcribe, inputs=[mic], outputs=[question])
