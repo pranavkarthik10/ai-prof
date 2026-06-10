@@ -12,12 +12,24 @@ from openai import OpenAI
 
 from .config import CONFIG
 
-_SYSTEM = (
-    "You are AI Prof, a warm, concise teaching assistant walking a student through "
-    "their lecture slides one at a time. Explain like a good TA: plain language, an "
-    "analogy when it helps, and a quick check for understanding. No preamble, no "
-    "'this slide shows' filler — just teach. Keep it to a few short paragraphs."
-)
+_SYSTEM = """You are AI Prof, teaching one student through a lecture deck in real time.
+
+Sound like a professor speaking naturally, not a study guide generating notes.
+- Open conversationally and get to the point. On the first slide, a simple opening
+  like "Hey, welcome back. Today we're looking at image filtering" is ideal.
+- Teach one or two ideas at a time in short spoken paragraphs. Connect them to the
+  previous slide when useful.
+- Explain jargon in plain language and use a compact example or analogy only when it
+  genuinely makes the idea easier to understand.
+- Guide the student toward the idea instead of exhaustively reciting every item.
+- Treat course codes, lecture numbers, citations, and credits as background metadata
+  unless they matter to the concept being taught.
+- End with a brief transition or a useful content question when one fits naturally.
+
+Never use canned headings such as "Key ideas on this slide" or "Quick check". Do not
+announce "Slide 1", narrate the slide layout, repeat all visible text, or ask whether
+the student is ready to begin or move on. Do not say "this slide shows". Keep the
+response concise enough to sound good aloud."""
 
 
 @lru_cache(maxsize=1)
@@ -37,9 +49,9 @@ def _stream_chat(messages: list[dict]) -> Iterator[str]:
         stream=True,
     )
     for chunk in stream:
-        delta = chunk.choices[0].delta.content
-        if delta:
-            yield delta
+        delta = chunk.choices[0].delta
+        if delta.content:
+            yield delta.content
 
 
 def _mock_stream(messages: list[dict]) -> Iterator[str]:
@@ -66,17 +78,27 @@ def explain_slide(
     history: list[dict] | None = None,
 ) -> Iterator[str]:
     """Stream a TA-style explanation of the current slide."""
-    messages = [
-        {"role": "system", "content": _SYSTEM},
+    messages = [{"role": "system", "content": _SYSTEM}]
+    for turn in (history or [])[-6:]:
+        if turn.get("content"):
+            messages.append(turn)
+    transition = (
+        "This is the opening slide. Welcome the student briefly and introduce today's topic."
+        if slide_no == 1
+        else "Continue naturally from the previous explanation without greeting the student again."
+    )
+    messages.append(
         {
             "role": "user",
             "content": (
                 f"Lecture deck outline:\n{outline}\n\n"
-                f"You are now on slide {slide_no} of {total}. Its reading:\n{reading}\n\n"
-                "Explain this slide to the student."
+                f"Current position: slide {slide_no} of {total}.\n"
+                f"Grounded slide reading:\n{reading}\n\n"
+                f"{transition} Teach the important idea conversationally. Do not turn the "
+                "response into a structured slide summary."
             ),
-        },
-    ]
+        }
+    )
     yield from _stream_chat(messages)
 
 
@@ -97,7 +119,8 @@ def answer_question(
             "content": (
                 f"We're on slide {slide_no}. Its reading:\n{reading}\n\n"
                 f"The student asks: {question}\n\n"
-                "Answer concisely, then offer to continue the lecture."
+                "Answer directly and conversationally. Relate the answer to the current "
+                "topic, then smoothly hand control back to the lecture without a canned offer."
             ),
         }
     )
