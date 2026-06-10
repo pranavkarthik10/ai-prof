@@ -9,6 +9,7 @@ continue the walkthrough.
 from __future__ import annotations
 
 import io
+import html
 import threading
 import uuid
 import wave
@@ -31,7 +32,7 @@ from ai_prof.vision import read_slide
 try:
     from ai_prof.rtc import build_rtc_handler as _build_rtc_handler
     _RTC_AVAILABLE = True
-except (ImportError, RuntimeError):
+except Exception:
     _RTC_AVAILABLE = False
 
 # module-level pre-read cache: {session_id: {slide_idx: reading_str}}
@@ -80,6 +81,40 @@ def _slide_view(state: dict):
     return slide.image_path, f"Slide {idx + 1} / {len(deck)}"
 
 
+def _reading_field(reading: str, name: str) -> str:
+    prefix = f"{name}:"
+    for line in reading.splitlines():
+        if line.upper().startswith(prefix):
+            return line[len(prefix):].strip()
+    return ""
+
+
+def _whiteboard_view(state: dict, reading: str | None = None) -> str:
+    deck: Deck | None = state["deck"]
+    if not deck:
+        return (
+            '<div class="whiteboard-empty">'
+            "<strong>Professor's whiteboard</strong>"
+            "<span>Key ideas and worked notes will appear here.</span>"
+            "</div>"
+        )
+    idx = state["index"]
+    reading = reading or state["readings"].get(idx, "")
+    title = _reading_field(reading, "TITLE") or f"Slide {idx + 1}"
+    concepts = _reading_field(reading, "CONCEPTS")
+    if not concepts:
+        concepts = "Listening for the central idea..."
+    return (
+        '<div class="whiteboard-sheet">'
+        f'<div class="whiteboard-kicker">Working notes · {idx + 1}/{len(deck)}</div>'
+        f"<h3>{html.escape(title)}</h3>"
+        f"<p>{html.escape(concepts)}</p>"
+        '<div class="whiteboard-line"></div>'
+        '<span class="whiteboard-hint">The professor can draw here as the lecture develops.</span>'
+        "</div>"
+    )
+
+
 # ----------------------------------------------------------------------------- handlers
 
 
@@ -94,7 +129,7 @@ def on_upload(pdf_file, state):
 
     if pdf_file is None:
         img, caption = _slide_view(state)
-        return state, img, caption, []
+        return state, img, caption, [], _whiteboard_view(state)
 
     deck = render_pdf(pdf_file, dpi=CONFIG.slide_dpi)
     state["deck"] = deck
@@ -113,7 +148,7 @@ def on_upload(pdf_file, state):
         t.start()
 
     img, caption = _slide_view(state)
-    return state, img, caption, []
+    return state, img, caption, [], _whiteboard_view(state, reading0)
 
 
 _STATUS_READING = (
@@ -152,6 +187,54 @@ def on_explain(state, chat):
     yield chat, _STATUS_IDLE
 
 
+def on_teach_deck(state, chat):
+    """Stream the lecture and move the teaching surface forward after each slide."""
+    deck: Deck | None = state["deck"]
+    if not deck:
+        gr.Warning("Upload a lecture PDF first.")
+        img, caption = _slide_view(state)
+        yield state, img, caption, chat, _STATUS_IDLE, _whiteboard_view(state)
+        return
+
+    start_idx = state["index"]
+    for idx in range(start_idx, len(deck)):
+        state["index"] = idx
+        img, caption = _slide_view(state)
+        yield state, img, caption, chat, _STATUS_READING, _whiteboard_view(state)
+
+        reading = _ensure_reading(state, idx)
+        board = _whiteboard_view(state, reading)
+        yield state, img, caption, chat, _STATUS_EXPLAINING, board
+
+        history = chat
+        chat = chat + [{"role": "assistant", "content": ""}]
+        acc = ""
+        for tok in explain_slide(
+            reading,
+            slide_no=idx + 1,
+            total=len(deck),
+            outline=deck.outline(),
+            history=history,
+        ):
+            acc += tok
+            chat[-1]["content"] = acc
+            yield state, img, caption, chat, _STATUS_EXPLAINING, board
+
+        if idx < len(deck) - 1:
+            state["index"] = idx + 1
+            next_img, next_caption = _slide_view(state)
+            yield (
+                state,
+                next_img,
+                next_caption,
+                chat,
+                _STATUS_READING,
+                _whiteboard_view(state),
+            )
+
+    yield state, *_slide_view(state), chat, _STATUS_IDLE, _whiteboard_view(state)
+
+
 def on_ask(question, state, chat):
     deck: Deck | None = state["deck"]
     if not deck:
@@ -177,7 +260,7 @@ def on_nav(delta, state):
     if deck:
         state["index"] = max(0, min(len(deck) - 1, state["index"] + delta))
     img, caption = _slide_view(state)
-    return state, img, caption
+    return state, img, caption, _whiteboard_view(state)
 
 
 def on_transcribe(audio):
@@ -217,40 +300,112 @@ _BANNER = (
     else None
 )
 
-with gr.Blocks(title="AI Prof") as demo:
+_CSS = """
+.gradio-container { max-width: 1500px !important; }
+.app-title { margin-bottom: 4px; }
+.teaching-panel { min-height: 470px; }
+.slide-frame img { object-fit: contain !important; background: #111827; }
+.whiteboard {
+    min-height: 470px;
+    border: 1px solid #d7dce3;
+    border-radius: 14px;
+    overflow: hidden;
+    background:
+        linear-gradient(#e8edf3 1px, transparent 1px),
+        linear-gradient(90deg, #e8edf3 1px, transparent 1px),
+        #fbfcfe;
+    background-size: 28px 28px;
+}
+.whiteboard-empty, .whiteboard-sheet {
+    min-height: 438px;
+    padding: 28px 32px;
+    color: #172033;
+}
+.whiteboard-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    color: #667085;
+}
+.whiteboard-sheet h3 { font-size: 1.8rem; margin: 24px 0 18px; }
+.whiteboard-sheet p { font-size: 1.2rem; line-height: 1.7; max-width: 90%; }
+.whiteboard-kicker {
+    color: #3157a4;
+    font-size: .78rem;
+    font-weight: 700;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+}
+.whiteboard-line { width: 72px; height: 4px; margin: 30px 0 14px; background: #f4b740; }
+.whiteboard-hint { color: #7a8496; font-size: .82rem; }
+.control-card {
+    border: 1px solid #e1e5eb;
+    border-radius: 14px;
+    padding: 12px;
+    background: #fff;
+}
+"""
+
+with gr.Blocks(title="AI Prof", theme=gr.themes.Soft(), css=_CSS) as demo:
     state = gr.State(_new_state())
 
-    gr.Markdown("# 🎓 AI Prof\nUpload your lecture slides and get walked through them, one by one.")
+    gr.Markdown(
+        "# AI Prof\nA live, guided walkthrough of your lecture.",
+        elem_classes=["app-title"],
+    )
     if _BANNER:
         gr.Markdown(_BANNER)
 
-    with gr.Row(equal_height=False):
-        with gr.Column(scale=3):
-            slide_img = gr.Image(label="Slide", show_label=False, height=460)
+    with gr.Row(equal_height=True):
+        with gr.Column(scale=1, elem_classes=["teaching-panel"]):
+            slide_img = gr.Image(
+                label="Lecture slides",
+                show_label=True,
+                height=470,
+                elem_classes=["slide-frame"],
+            )
             caption = gr.Markdown("No deck loaded.")
             with gr.Row():
-                prev_btn = gr.Button("◀ Prev")
-                explain_btn = gr.Button("▶ Explain this slide", variant="primary")
-                next_btn = gr.Button("Next ▶")
-            pdf = gr.File(label="Lecture PDF", file_types=[".pdf"], type="filepath")
+                prev_btn = gr.Button("Previous")
+                explain_btn = gr.Button("Explain slide")
+                next_btn = gr.Button("Next")
 
-        with gr.Column(scale=2):
+        with gr.Column(scale=1, elem_classes=["teaching-panel"]):
+            gr.Markdown("### Whiteboard")
+            whiteboard = gr.HTML(
+                value=_whiteboard_view(_new_state()),
+                elem_classes=["whiteboard"],
+            )
+
+    with gr.Row(equal_height=True):
+        with gr.Column(scale=5):
             status_strip = gr.HTML(value=_STATUS_IDLE)
-            chat = gr.Chatbot(label="AI Prof", height=500)
-            with gr.Row():
+            chat = gr.Chatbot(
+                label="Lecture transcript",
+                height=320,
+                type="messages",
+                layout="panel",
+                placeholder="The lecture transcript will appear here.",
+            )
+
+        with gr.Column(scale=3, elem_classes=["control-card"]):
+            gr.Markdown("### Ask a question")
+            mic = gr.Audio(
+                sources=["microphone"],
+                type="numpy",
+                streaming=False,
+                show_label=False,
+            )
+            with gr.Row(equal_height=True):
                 question = gr.Textbox(
-                    placeholder="Ask a question… (or use the mic 🎙️)",
+                    placeholder="Type a question or use push to talk...",
                     show_label=False,
-                    submit_btn=True,
                     scale=5,
                 )
-                mic = gr.Audio(
-                    sources=["microphone"],
-                    type="numpy",
-                    streaming=False,
-                    show_label=False,
-                    scale=1,
-                )
+                ask_btn = gr.Button("Ask", variant="primary", scale=1)
+            teach_btn = gr.Button("Teach from current slide", variant="secondary")
             # TODO: wire fastrtc when installed — replace `mic` above with:
             #
             #   if _RTC_AVAILABLE:
@@ -273,16 +428,46 @@ with gr.Blocks(title="AI Prof") as demo:
             #               → TTS (/v1/audio/speech, PCM chunks)
             #               → student speaker (sub-second latency)
 
-    pdf.change(on_upload, [pdf, state], [state, slide_img, caption, chat]).then(
-        on_explain, [state, chat], [chat, status_strip]
+        with gr.Column(scale=2, elem_classes=["control-card"]):
+            gr.Markdown("### Lecture upload")
+            pdf = gr.File(
+                label="Drop a PDF to begin",
+                file_types=[".pdf"],
+                type="filepath",
+                height=220,
+            )
+            gr.Markdown(
+                "The professor starts at slide 1 and advances automatically. "
+                "Use the slide controls to revisit anything."
+            )
+
+    lecture_outputs = [state, slide_img, caption, chat, status_strip, whiteboard]
+    pdf.change(
+        on_upload,
+        [pdf, state],
+        [state, slide_img, caption, chat, whiteboard],
+    ).then(
+        on_teach_deck,
+        [state, chat],
+        lecture_outputs,
     )
 
     explain_btn.click(on_explain, [state, chat], [chat, status_strip])
+    teach_btn.click(on_teach_deck, [state, chat], lecture_outputs)
     question.submit(on_ask, [question, state, chat], [chat, question])
-    prev_btn.click(on_nav, [gr.State(-1), state], [state, slide_img, caption])
-    next_btn.click(on_nav, [gr.State(1), state], [state, slide_img, caption])
+    ask_btn.click(on_ask, [question, state, chat], [chat, question])
+    prev_btn.click(
+        on_nav,
+        [gr.State(-1), state],
+        [state, slide_img, caption, whiteboard],
+    )
+    next_btn.click(
+        on_nav,
+        [gr.State(1), state],
+        [state, slide_img, caption, whiteboard],
+    )
     mic.stop_recording(on_transcribe, inputs=[mic], outputs=[question])
 
 
 if __name__ == "__main__":
-    demo.launch(theme=gr.themes.Soft())
+    demo.launch()
