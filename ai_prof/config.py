@@ -42,6 +42,8 @@ class ModelConfig:
 class Config:
     vision: ModelConfig
     brain: ModelConfig
+    tts: ModelConfig
+    stt: ModelConfig
     slide_dpi: int
 
     @property
@@ -60,6 +62,16 @@ def load_config() -> Config:
             base_url=_clean(os.getenv("BRAIN_BASE_URL")),
             api_key=_clean(os.getenv("BRAIN_API_KEY")) or "sk-no-key-required",
             model=_clean(os.getenv("BRAIN_MODEL")) or "nemotron-3-nano",
+        ),
+        tts=ModelConfig(
+            base_url=_clean(os.getenv("TTS_BASE_URL")),
+            api_key=_clean(os.getenv("TTS_API_KEY")) or "sk-no-key-required",
+            model=_clean(os.getenv("TTS_MODEL")) or "tts-1",
+        ),
+        stt=ModelConfig(
+            base_url=_clean(os.getenv("STT_BASE_URL")),
+            api_key=_clean(os.getenv("STT_API_KEY")) or "sk-no-key-required",
+            model=_clean(os.getenv("STT_MODEL")) or "whisper-1",
         ),
         slide_dpi=int(_clean(os.getenv("SLIDE_DPI")) or "150"),
     )

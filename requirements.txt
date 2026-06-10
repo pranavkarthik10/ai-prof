@@ -1,4 +1,5 @@
 gradio>=4.44
+fastrtc>=0.0.18        # WebRTC real-time voice layer; install with: pip install "fastrtc[vad]"
 pymupdf>=1.24
 openai>=1.40
 pillow>=10.0
