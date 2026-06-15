@@ -30,7 +30,7 @@ misses the in-class explanation.
 
 ## Demo
 
-- **Live Space:** **TODO before submission — add the public Space URL here**
+- **Live Space:** [AI Prof on Hugging Face](https://huggingface.co/spaces/build-small-hackathon/ai-prof)
 - **Demo video:** **TODO before submission — add the public video URL here**
 - **Social post:** **TODO before submission — add the public post URL here**
 - **Team:** [@pranavkarthik10](https://huggingface.co/pranavkarthik10)
