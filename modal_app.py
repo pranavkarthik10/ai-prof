@@ -72,6 +72,10 @@ def _vllm_cmd() -> list[str]:
         "--max-model-len", str(MAX_MODEL_LEN),
         "--max-num-seqs", "8",
         "--tensor-parallel-size", "1",
+        # Modal Volumes mount as 9P, which vLLM does not recognize as a network
+        # filesystem. Force parallel prefetch instead of reading 13 shards
+        # serially; the serial path takes roughly ten minutes for this checkpoint.
+        "--safetensors-load-strategy", "prefetch",
         "--trust-remote-code",
         "--reasoning-parser", "nemotron_v3",
     ]
@@ -132,6 +136,7 @@ def warm() -> None:
             proc.kill()
     vllm_cache.commit()
     flashinfer_cache.commit()
+    triton_cache.commit()
     print("Warm complete — compile caches committed. Cold starts will now be fast.")
 
 
