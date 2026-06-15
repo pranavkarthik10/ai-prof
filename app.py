@@ -589,6 +589,30 @@ _BANNER = (
 
 _CSS = """
 .gradio-container {
+    --app-text: #24283b;
+    --app-muted: #667085;
+    --app-card: #ffffff;
+    --app-border: #e1e5eb;
+    --app-panel-title: #ecebff;
+    --app-panel-title-border: #dedcff;
+    --app-accent-text: #5b55c7;
+    --app-slide-bg: #f8f9fb;
+    --app-nav-bg: #f7f6ff;
+    --app-nav-border: #d8d6ff;
+}
+.dark .gradio-container {
+    --app-text: #f2f4f7;
+    --app-muted: #a7b0c0;
+    --app-card: #171923;
+    --app-border: #303442;
+    --app-panel-title: #24213d;
+    --app-panel-title-border: #3a3560;
+    --app-accent-text: #c6c2ff;
+    --app-slide-bg: #10121a;
+    --app-nav-bg: #27243f;
+    --app-nav-border: #4b4678;
+}
+.gradio-container {
     max-width: 1320px !important;
     margin: 0 auto !important;
     padding-inline: 24px !important;
@@ -600,14 +624,14 @@ _CSS = """
 }
 .app-title h1 {
     margin: 0 0 4px !important;
-    color: #24283b;
+    color: var(--app-text);
     font-size: 2.15rem !important;
     font-weight: 800 !important;
     letter-spacing: -.035em;
 }
 .app-title p {
     margin: 0 !important;
-    color: #697386;
+    color: var(--app-muted);
     font-size: 1rem;
 }
 .workspace-row {
@@ -620,9 +644,9 @@ _CSS = """
     min-width: 0 !important;
     overflow: hidden;
     gap: 0 !important;
-    border: 1px solid #e1e5eb;
+    border: 1px solid var(--app-border);
     border-radius: 14px;
-    background: #fff;
+    background: var(--app-card);
 }
 .panel-title {
     flex: 0 0 46px !important;
@@ -632,9 +656,9 @@ _CSS = """
     align-items: center !important;
     margin: 0 !important;
     padding: 0 14px !important;
-    background: #ecebff;
-    border-bottom: 1px solid #dedcff;
-    color: #5b55c7;
+    background: var(--app-panel-title);
+    border-bottom: 1px solid var(--app-panel-title-border);
+    color: var(--app-accent-text);
 }
 .panel-title p {
     margin: 0 !important;
@@ -656,7 +680,7 @@ _CSS = """
 .slide-frame img {
     height: 550px !important;
     object-fit: contain !important;
-    background: #f8f9fb;
+    background: var(--app-slide-bg);
 }
 .slide-footer {
     padding: 0 12px 12px !important;
@@ -664,7 +688,7 @@ _CSS = """
 .slide-caption {
     min-height: 24px;
     margin: 0 !important;
-    color: #667085;
+    color: var(--app-muted);
 }
 .slide-index {
     margin: 2px 0 8px !important;
@@ -678,9 +702,13 @@ _CSS = """
     font-weight: 700 !important;
 }
 .nav-button button {
-    color: #5b55c7 !important;
-    border: 1px solid #d8d6ff !important;
-    background: #f7f6ff !important;
+    color: var(--app-accent-text) !important;
+    border: 1px solid var(--app-nav-border) !important;
+    background: var(--app-nav-bg) !important;
+}
+.nav-button button:hover {
+    border-color: #7770ef !important;
+    background: color-mix(in srgb, var(--app-nav-bg) 82%, #625ce7) !important;
 }
 .explain-button button {
     color: #fff !important;
@@ -795,7 +823,7 @@ _CSS = """
 }
 .mic-label {
     margin: 2px 0 -4px !important;
-    color: #697386;
+    color: var(--app-muted);
     font-size: .82rem;
     font-weight: 650;
 }
@@ -828,8 +856,17 @@ _CSS = """
 }
 .upload-copy {
     margin: 0 !important;
-    color: #667085;
+    color: var(--app-muted);
     font-size: .88rem;
+}
+.dark .panel-card input,
+.dark .panel-card textarea,
+.dark .panel-card select {
+    color-scheme: dark;
+}
+.dark .status-strip > div[style] {
+    filter: brightness(.72) saturate(.9);
+    color: #f3f4f6 !important;
 }
 @media (max-width: 900px) {
     .gradio-container { padding-inline: 12px !important; }
@@ -883,7 +920,7 @@ with gr.Blocks(title="AI Prof", theme=gr.themes.Soft(), css=_CSS) as demo:
     with gr.Row(equal_height=True, elem_classes=["workspace-row"]):
         with gr.Column(scale=5, elem_classes=["panel-card", "bottom-panel"]):
             gr.Markdown("Lecture transcript", elem_classes=["panel-title"])
-            status_strip = gr.HTML(value=_STATUS_IDLE)
+            status_strip = gr.HTML(value=_STATUS_IDLE, elem_classes=["status-strip"])
             prof_audio = gr.Audio(
                 autoplay=True,
                 show_label=False,
