@@ -119,35 +119,3 @@ or granting the app write access.
 Do not enable remote writes for arbitrary uploads to a public dataset. Processed
 slides can contain the original lecture material. Use a private dataset for personal
 testing or only prewarm material you have permission to publish.
-
-## Status
-**Professor agent loop working:** upload a lecture PDF → render and index the complete
-deck → Nemotron plans short teaching beats → the orchestrator executes validated slide
-navigation and whiteboard tools → VoxCPM speaks the explanation. Student questions
-cancel active narration, can send the professor to a more relevant slide, and can add
-supporting notes or equations to the whiteboard.
-
-Targeted vision via `look_closer` and richer Excalidraw diagrams remain follow-up work.
-
-Layout: [`app.py`](app.py) (Gradio UI) · [`ai_prof/pdf_utils.py`](ai_prof/pdf_utils.py) (PDF→slides) ·
-[`ai_prof/vision.py`](ai_prof/vision.py) (eyes) · [`ai_prof/brain.py`](ai_prof/brain.py) (brain) ·
-[`ai_prof/config.py`](ai_prof/config.py) (endpoints / mock fallback).
-
-The inference services run on Modal: MiniCPM-V through llama.cpp, Nemotron
-through vLLM, VoxCPM2 through vLLM-Omni, and distil-Whisper through a small
-OpenAI-compatible FastAPI server.
-The Gradio frontend remains deployable as a Hugging Face Space.
-
-Run the focused test suite with:
-
-```bash
-.venv/bin/python -m unittest discover -s tests -v
-```
-
-Next up (see [IDEATION.md](IDEATION.md)): prepared-deck storage on Hugging Face,
-animated structured diagrams, stronger cancellation during browser audio playback,
-and targeted `look_closer` vision.
-
-The current target design is documented in [ARCHITECTURE.md](ARCHITECTURE.md), including complete-deck
-indexing, the professor tool loop, a preprocessed demo lecture, synchronized speech and whiteboard actions,
-and interruption/resume behavior.
