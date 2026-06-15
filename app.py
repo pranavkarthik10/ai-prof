@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import html
+from pathlib import Path
 import threading
 import time
 import uuid
@@ -22,6 +23,7 @@ from openai import OpenAI
 from ai_prof.agent import AgentAction, plan_teaching_beat
 from ai_prof.brain import explain_slide
 from ai_prof.config import CONFIG
+from ai_prof.deck_cache import DeckCache
 from ai_prof.pdf_utils import Deck, render_pdf
 from ai_prof.vision import read_slide
 
@@ -51,6 +53,19 @@ except Exception:
 # module-level pre-read cache: {session_id: {slide_idx: reading_str}}
 _preread: dict[str, dict[int, str]] = {}
 _preread_lock = threading.Lock()
+_deck_cache = DeckCache(
+    root=CONFIG.deck_cache_dir,
+    repo_id=CONFIG.hf_deck_cache_repo,
+    token=CONFIG.hf_token,
+    write_remote=CONFIG.hf_deck_cache_write,
+)
+
+
+def _prepared_deck_choices() -> list[tuple[str, str]]:
+    return [
+        (f"{item.title} ({item.slide_count} slides)", item.key)
+        for item in _deck_cache.list_decks()
+    ]
 
 
 def _new_state() -> dict:
@@ -75,7 +90,8 @@ def _ensure_reading(state: dict, idx: int) -> str:
     cache = state["readings"]
     if idx not in cache:
         slide = state["deck"].slides[idx]
-        cache[idx] = read_slide(slide.image_path, text_layer=slide.text)
+        prior = cache.get(idx - 1) if idx > 0 else None
+        cache[idx] = read_slide(slide.image_path, text_layer=slide.text, prior_reading=prior)
     return cache[idx]
 
 
@@ -246,6 +262,30 @@ def on_upload(pdf_file, state):
         yield state, img, caption, [], _whiteboard_view(state), _STATUS_IDLE, gr.update(choices=[], value=None)
         return
 
+    cache_key = _deck_cache.key(
+        pdf_file,
+        dpi=CONFIG.slide_dpi,
+        vision_model=CONFIG.vision.model,
+    )
+    cached = _deck_cache.load(cache_key)
+    if cached is not None:
+        state["deck"] = cached.deck
+        state["readings"] = cached.readings
+        state["deck_index"] = cached.deck_index or _build_deck_index(state)
+        with _preread_lock:
+            _preread[sid] = dict(cached.readings)
+        img, caption = _slide_view(state)
+        yield (
+            state,
+            img,
+            caption,
+            [],
+            _whiteboard_view(state, state["readings"].get(0, "")),
+            _STATUS_CACHE_HIT,
+            gr.update(choices=_index_choices(state), value=0),
+        )
+        return
+
     deck = render_pdf(pdf_file, dpi=CONFIG.slide_dpi)
     state["deck"] = deck
     img, caption = _slide_view(state)
@@ -263,7 +303,8 @@ def on_upload(pdf_file, state):
         _preread[sid] = {}
 
     for idx, slide in enumerate(deck.slides):
-        reading = read_slide(slide.image_path, text_layer=slide.text)
+        prior = state["readings"].get(idx - 1) if idx > 0 else None
+        reading = read_slide(slide.image_path, text_layer=slide.text, prior_reading=prior)
         state["readings"][idx] = reading
         with _preread_lock:
             _preread[sid][idx] = reading
@@ -277,6 +318,17 @@ def on_upload(pdf_file, state):
             gr.update(choices=_index_choices(state), value=0),
         )
     state["deck_index"] = _build_deck_index(state)
+    _deck_cache.save(
+        cache_key,
+        deck=deck,
+        readings=state["readings"],
+        deck_index=state["deck_index"],
+        metadata={
+            "title": Path(pdf_file).stem,
+            "dpi": CONFIG.slide_dpi,
+            "vision_model": CONFIG.vision.model,
+        },
+    )
 
     img, caption = _slide_view(state)
     yield (
@@ -286,6 +338,43 @@ def on_upload(pdf_file, state):
         [],
         _whiteboard_view(state, state["readings"][0]),
         _STATUS_IDLE,
+        gr.update(choices=_index_choices(state), value=0),
+    )
+
+
+def on_load_prepared(cache_key, state):
+    old_sid = state.get("session_id")
+    state = _new_state()
+    sid = state["session_id"]
+    if old_sid:
+        reset_tts_voice(old_sid)
+        with _preread_lock:
+            _preread.pop(old_sid, None)
+
+    cached = _deck_cache.load(str(cache_key or ""))
+    if cached is None:
+        gr.Warning("That prepared lecture could not be loaded.")
+        yield (
+            state,
+            *_slide_view(state),
+            [],
+            _whiteboard_view(state),
+            _STATUS_IDLE,
+            gr.update(choices=[], value=None),
+        )
+        return
+
+    state["deck"] = cached.deck
+    state["readings"] = cached.readings
+    state["deck_index"] = cached.deck_index or _build_deck_index(state)
+    with _preread_lock:
+        _preread[sid] = dict(cached.readings)
+    yield (
+        state,
+        *_slide_view(state),
+        [],
+        _whiteboard_view(state, state["readings"].get(0, "")),
+        _STATUS_CACHE_HIT,
         gr.update(choices=_index_choices(state), value=0),
     )
 
@@ -307,6 +396,12 @@ _STATUS_THINKING = (
     'font-size:0.85rem;color:#9a3412;border-radius:0 4px 4px 0">Thinking…</div>'
 )
 _STATUS_IDLE = ""
+_STATUS_CACHE_HIT = (
+    '<div style="background:#ecfdf5;border-left:3px solid #10b981;padding:6px 12px;'
+    'font-size:0.85rem;color:#065f46;border-radius:0 4px 4px 0">'
+    "Loaded pre-indexed lecture from cache"
+    "</div>"
+)
 
 
 def _status_indexing(done: int, total: int) -> str:
@@ -860,13 +955,24 @@ with gr.Blocks(title="AI Prof", theme=gr.themes.Soft(), css=_CSS) as demo:
             #               → student speaker (sub-second latency)
 
         with gr.Column(scale=2, elem_classes=["panel-card", "bottom-panel"]):
-            gr.Markdown("Lecture upload", elem_classes=["panel-title"])
+            gr.Markdown("Choose a lecture", elem_classes=["panel-title"])
             with gr.Column(elem_classes=["upload-body"]):
+                prepared_deck = gr.Dropdown(
+                    label="Prepared lectures",
+                    choices=_prepared_deck_choices(),
+                    value=None,
+                    interactive=True,
+                )
+                load_prepared_btn = gr.Button(
+                    "Load prepared lecture",
+                    variant="primary",
+                )
+                gr.Markdown("Or upload your own PDF", elem_classes=["mic-label"])
                 pdf = gr.File(
                     label="Drop a PDF to begin",
                     file_types=[".pdf"],
                     type="filepath",
-                    height=210,
+                    height=130,
                     elem_classes=["upload-control"],
                 )
                 gr.Markdown(
@@ -895,6 +1001,15 @@ with gr.Blocks(title="AI Prof", theme=gr.themes.Soft(), css=_CSS) as demo:
         [state, chat],
         lecture_outputs,
     )
+    prepared_event = load_prepared_btn.click(
+        on_load_prepared,
+        [prepared_deck, state],
+        [state, slide_img, caption, chat, whiteboard, status_strip, slide_index],
+    ).then(
+        on_teach_deck,
+        [state, chat],
+        lecture_outputs,
+    )
 
     explain_event = explain_btn.click(
         on_explain,
@@ -906,13 +1021,13 @@ with gr.Blocks(title="AI Prof", theme=gr.themes.Soft(), css=_CSS) as demo:
         on_ask,
         [question, state, chat],
         question_outputs,
-        cancels=[upload_event, explain_event, teach_event],
+        cancels=[upload_event, prepared_event, explain_event, teach_event],
     )
     ask_btn.click(
         on_ask,
         [question, state, chat],
         question_outputs,
-        cancels=[upload_event, explain_event, teach_event],
+        cancels=[upload_event, prepared_event, explain_event, teach_event],
     )
     prev_btn.click(
         on_nav,

@@ -15,6 +15,7 @@ models/
 weights/
 slides/
 data/
+.cache/
 *.pdf
 
 # Secrets / env

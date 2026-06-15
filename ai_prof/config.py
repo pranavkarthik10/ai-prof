@@ -54,6 +54,10 @@ class Config:
     stt: ModelConfig
     slide_dpi: int
     tts_voice: str
+    deck_cache_dir: str
+    hf_deck_cache_repo: str | None
+    hf_token: str | None
+    hf_deck_cache_write: bool
 
     @property
     def fully_mocked(self) -> bool:
@@ -84,6 +88,13 @@ def load_config() -> Config:
         ),
         slide_dpi=int(_clean(os.getenv("SLIDE_DPI")) or "150"),
         tts_voice=_clean(os.getenv("TTS_VOICE")) or "default",
+        deck_cache_dir=_clean(os.getenv("DECK_CACHE_DIR")) or ".cache/ai-prof/decks",
+        hf_deck_cache_repo=_clean(os.getenv("HF_DECK_CACHE_REPO")),
+        hf_token=_clean(os.getenv("HF_TOKEN")),
+        hf_deck_cache_write=(
+            (_clean(os.getenv("HF_DECK_CACHE_WRITE")) or "").lower()
+            in {"1", "true", "yes", "on"}
+        ),
     )
 
 
