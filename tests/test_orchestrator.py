@@ -1,6 +1,8 @@
 import unittest
 from unittest.mock import patch
 
+import numpy as np
+
 from ai_prof.agent import AgentAction, TeachingBeat
 from ai_prof.pdf_utils import Deck, Slide
 import app
@@ -90,6 +92,34 @@ class OrchestratorTests(unittest.TestCase):
 
         self.assertEqual(final[0]["index"], 1)
         self.assertEqual(final[2], "Slide 2 / 3")
+
+    @patch.object(app.time, "sleep")
+    def test_audio_wait_includes_browser_startup_grace(self, sleep):
+        app._wait_for_audio((4, np.zeros(8, dtype=np.float32)))
+
+        sleep.assert_called_once_with(2 + app._AUDIO_STARTUP_GRACE_SECONDS)
+
+    @patch.object(app, "_wait_for_audio")
+    @patch.object(app, "tts_speak_full", return_value=(4, np.zeros(8, dtype=np.float32)))
+    @patch.object(app, "plan_teaching_beat")
+    def test_lecture_waits_for_audio_before_advancing(self, plan, _tts, wait):
+        plan.side_effect = [
+            TeachingBeat("First beat.", continue_lecture=True),
+            TeachingBeat("Second beat.", continue_lecture=False),
+        ]
+        lecture = app.on_teach_deck(_state(), [])
+
+        while True:
+            output = next(lecture)
+            if output[4] == app._STATUS_SPEAKING:
+                break
+
+        self.assertEqual(output[0]["index"], 0)
+        self.assertEqual(output[2], "Slide 1 / 3")
+        self.assertFalse(wait.called)
+
+        next(lecture)
+        wait.assert_called_once()
 
     def test_index_select_moves_to_requested_slide(self):
         state, _img, caption, _board = app.on_index_select(2, _state())

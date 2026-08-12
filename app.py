@@ -26,6 +26,7 @@ from ai_prof.config import CONFIG
 from ai_prof.deck_cache import DeckCache
 from ai_prof.pdf_utils import Deck, render_pdf
 from ai_prof.vision import read_slide
+from ai_prof.warmup import start_service_warmup
 
 # ---------------------------------------------------------------------------
 # Optional WebRTC real-time voice layer (requires: pip install "fastrtc[vad]")
@@ -396,6 +397,7 @@ _STATUS_THINKING = (
     'font-size:0.85rem;color:#9a3412;border-radius:0 4px 4px 0">Thinking…</div>'
 )
 _STATUS_IDLE = ""
+_AUDIO_STARTUP_GRACE_SECONDS = 0.75
 _STATUS_CACHE_HIT = (
     '<div style="background:#ecfdf5;border-left:3px solid #10b981;padding:6px 12px;'
     'font-size:0.85rem;color:#065f46;border-radius:0 4px 4px 0">'
@@ -411,6 +413,13 @@ def _status_indexing(done: int, total: int) -> str:
         f"Indexing lecture… {done} / {total} slides"
         "</div>"
     )
+
+
+def _wait_for_audio(audio: tuple[int, object]) -> None:
+    """Keep UI state aligned with browser playback before advancing."""
+    sample_rate, pcm = audio
+    sample_count = getattr(pcm, "size", len(pcm))
+    time.sleep(sample_count / sample_rate + _AUDIO_STARTUP_GRACE_SECONDS)
 
 
 def on_explain(state, chat):
@@ -438,7 +447,7 @@ def on_explain(state, chat):
     audio = tts_speak_full(acc, voice_key=state["session_id"])
     if audio is not None:
         yield chat, _STATUS_SPEAKING, gr.update(value=audio, visible=True)
-        time.sleep(len(audio[1]) / audio[0])
+        _wait_for_audio(audio)
     yield chat, _STATUS_IDLE, gr.update(value=None, visible=False)
 
 
@@ -475,9 +484,8 @@ def on_teach_deck(state, chat):
 
         audio = tts_speak_full(beat.narration, voice_key=state["session_id"])
         if audio is not None:
-            sr, pcm = audio
             yield state, img, caption, chat, _STATUS_SPEAKING, board, gr.update(value=audio, visible=True)
-            time.sleep(len(pcm) / sr)
+            _wait_for_audio(audio)
 
         if not beat.continue_lecture:
             break
@@ -529,9 +537,8 @@ def on_ask(question, state, chat):
     yield state, img, caption, chat, _STATUS_EXPLAINING, board, None, ""
     audio = tts_speak_full(beat.narration, voice_key=state["session_id"])
     if audio is not None:
-        sr, pcm = audio
         yield state, img, caption, chat, _STATUS_SPEAKING, board, gr.update(value=audio, visible=True), ""
-        time.sleep(len(pcm) / sr)
+        _wait_for_audio(audio)
     yield state, img, caption, chat, _STATUS_IDLE, board, gr.update(value=None, visible=False), ""
 
 
@@ -1085,4 +1092,5 @@ with gr.Blocks(title="AI Prof", theme=gr.themes.Soft(), css=_CSS) as demo:
 
 
 if __name__ == "__main__":
+    start_service_warmup()
     demo.launch()
